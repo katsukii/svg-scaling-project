@@ -1,0 +1,11 @@
+torch>=2.0
+numpy
+datasets
+tokenizers
+mup
+lxml
+cairosvg
+matplotlib
+scipy
+tqdm
+wandb
