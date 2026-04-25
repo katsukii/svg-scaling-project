@@ -11,6 +11,9 @@ data/
 # Training artifacts
 results/checkpoints/
 results/logs/
+results/runs/
+results/samples/
+src/results/
 
 # Python
 __pycache__/

@@ -1,0 +1,28 @@
+# Tiny model config (~1.3M params)
+model:
+  vocab_size: 4096
+  block_size: 1024
+  n_layer: 4
+  n_head: 4
+  n_embd: 128
+  d_ff: 512
+  dropout: 0.0
+  bias: false
+
+training:
+  batch_size: 16       # sequences per batch (16 * 1024 = 16K tokens/batch)
+  learning_rate: 3.0e-4
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  warmup_frac: 0.03    # 3% of total steps
+  min_lr_frac: 0.1     # cosine decays to lr * 0.1
+  max_steps: null       # null = 1 epoch
+  eval_interval: 200
+  eval_steps: 50
+  log_interval: 50
+  checkpoint_interval: 1000
+
+data:
+  train_path: data/tokenized/train.bin
+  val_path: data/tokenized/val.bin
