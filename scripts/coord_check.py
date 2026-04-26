@@ -107,15 +107,30 @@ def run_coord_check(
         )
 
         torch.manual_seed(42)
-        model = GPT(config).to(device)
-        optimizer = model.configure_optimizers(
-            weight_decay=0.1, learning_rate=lr,
-            betas=(0.9, 0.95), device_type=device.type,
-        )
+        model = GPT(config)
 
-        # Apply lr_scale to optimizer groups
-        for pg in optimizer.param_groups:
-            pg['lr'] = lr * pg.get('lr_scale', 1.0)
+        if mup:
+            # Use mup package for proper base shape setup
+            from train import setup_mup
+            setup_mup(model, config, device)
+
+        model = model.to(device)
+
+        if mup:
+            from mup import MuAdamW
+            decay_params = [p for n, p in model.named_parameters()
+                            if p.requires_grad and p.dim() >= 2]
+            nodecay_params = [p for n, p in model.named_parameters()
+                              if p.requires_grad and p.dim() < 2]
+            optimizer = MuAdamW([
+                {'params': decay_params, 'weight_decay': 0.1},
+                {'params': nodecay_params, 'weight_decay': 0.0},
+            ], lr=lr, betas=(0.9, 0.95))
+        else:
+            optimizer = model.configure_optimizers(
+                weight_decay=0.1, learning_rate=lr,
+                betas=(0.9, 0.95), device_type=device.type,
+            )
 
         # Train for n_steps on the fixed batch
         model.train()

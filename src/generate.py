@@ -34,13 +34,19 @@ def load_model(
         n_head=cfg['n_head'],
         n_embd=cfg['n_embd'],
         d_ff=cfg['d_ff'],
-        dropout=cfg['dropout'],
-        bias=cfg['bias'],
+        dropout=cfg.get('dropout', 0.0),
+        bias=cfg.get('bias', False),
         mup=mup,
         mup_base_width=mup_base_width,
     )
-    model = GPT(mc).to(device)
+    model = GPT(mc)
 
+    # µP: set base shapes before loading weights (required for MuReadout)
+    if mup:
+        from train import setup_mup
+        setup_mup(model, mc, device)
+
+    model = model.to(device)
     state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
     # Handle both raw state_dict and checkpoint dict
     if 'model' in state_dict:
@@ -72,6 +78,7 @@ def generate_svg(
     max_new_tokens: int = 512,
     temperature: float = 0.8,
     top_k: int | None = 50,
+    top_p: float | None = None,
     device: torch.device = torch.device('cpu'),
 ) -> tuple[str, str | None]:
     """Generate a single SVG from a prefix string.
@@ -93,7 +100,7 @@ def generate_svg(
 
     output = model.generate(
         idx, max_new_tokens,
-        temperature=temperature, top_k=top_k,
+        temperature=temperature, top_k=top_k, top_p=top_p,
         eos_token_id=eos_id,
     )
     generated_ids = output[0].tolist()
@@ -119,6 +126,8 @@ def main():
     parser.add_argument('--max-tokens', type=int, default=512)
     parser.add_argument('--temperature', type=float, default=0.8)
     parser.add_argument('--top-k', type=int, default=50)
+    parser.add_argument('--top-p', type=float, default=None,
+                        help='Nucleus sampling threshold (e.g. 0.95)')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Save samples to this directory')
     parser.add_argument('--device', type=str, default=None)
@@ -161,6 +170,7 @@ def main():
             max_new_tokens=args.max_tokens,
             temperature=args.temperature,
             top_k=args.top_k,
+            top_p=args.top_p,
             device=device,
         )
 

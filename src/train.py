@@ -3,6 +3,7 @@
 Usage:
     python src/train.py --config configs/tiny.yaml
     python src/train.py --config configs/tiny.yaml --max-steps 1000  # override
+    python src/train.py --config configs/tiny.yaml --mup             # µP mode
 """
 
 import argparse
@@ -89,6 +90,54 @@ def get_lr(
     return min_lr + 0.5 * (max_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
 
 
+def setup_mup(model: GPT, config: ModelConfig, device: torch.device) -> None:
+    """Set up µP base shapes on the model.
+
+    Creates a base model (with base_width) and a delta model (base_width + 1)
+    to compute the base shapes for µP scaling. This enables MuAdamW to
+    automatically scale learning rates per layer.
+    """
+    from mup import set_base_shapes, make_base_shapes
+
+    base_config = ModelConfig(
+        vocab_size=config.vocab_size,
+        block_size=config.block_size,
+        n_layer=config.n_layer,
+        n_head=config.n_head,
+        n_embd=config.mup_base_width,
+        d_ff=config.mup_base_width * (config.d_ff // config.n_embd),
+        dropout=config.dropout,
+        bias=config.bias,
+        mup=True,
+        mup_base_width=config.mup_base_width,
+    )
+    # n_head must divide base width — use same n_head if divisible, else 1
+    if config.mup_base_width % config.n_head == 0:
+        base_config.n_head = config.n_head
+    else:
+        base_config.n_head = 1
+
+    delta_config = ModelConfig(
+        vocab_size=config.vocab_size,
+        block_size=config.block_size,
+        n_layer=config.n_layer,
+        n_head=base_config.n_head,
+        n_embd=config.mup_base_width + base_config.n_head,  # delta = base + 1 per head
+        d_ff=base_config.d_ff + (config.d_ff // config.n_embd) * base_config.n_head,
+        dropout=config.dropout,
+        bias=config.bias,
+        mup=True,
+        mup_base_width=config.mup_base_width,
+    )
+
+    base_model = GPT(base_config)
+    delta_model = GPT(delta_config)
+    base_shapes = make_base_shapes(base_model, delta_model)
+    set_base_shapes(model, base_shapes)
+    del base_model, delta_model
+    print("  µP base shapes set successfully")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train SVG language model')
     parser.add_argument('--config', type=str, required=True, help='Path to config YAML')
@@ -101,6 +150,8 @@ def main():
                         help='Enable µP (Maximal Update Parameterization)')
     parser.add_argument('--mup-base-width', type=int, default=128,
                         help='Base width for µP (default: 128 = Tiny n_embd)')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Path to checkpoint to resume from')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -143,44 +194,80 @@ def main():
         n_head=model_cfg['n_head'],
         n_embd=model_cfg['n_embd'],
         d_ff=model_cfg['d_ff'],
-        dropout=model_cfg['dropout'],
-        bias=model_cfg['bias'],
+        dropout=model_cfg.get('dropout', 0.0),
+        bias=model_cfg.get('bias', False),
         mup=args.mup,
         mup_base_width=args.mup_base_width,
     )
-    model = GPT(mc).to(device)
+    model = GPT(mc)
+
+    # µP setup: set base shapes before moving to device
+    if args.mup:
+        setup_mup(model, mc, device)
+
+    model = model.to(device)
     n_params = model.get_num_params()
     param_mode = "µP" if args.mup else "SP"
     print(f"Model parameters: {n_params:,} ({n_params/1e6:.2f}M) [{param_mode}]")
     if args.mup:
-        print(f"  µP width_mult={model.width_mult:.3f}, base_width={args.mup_base_width}")
+        width_mult = mc.n_embd / mc.mup_base_width
+        print(f"  µP width_mult={width_mult:.3f}, base_width={args.mup_base_width}")
 
     # Optimizer
-    optimizer = model.configure_optimizers(
-        weight_decay=train_cfg['weight_decay'],
-        learning_rate=train_cfg['learning_rate'],
-        betas=tuple(train_cfg['betas']),
-        device_type=device.type,
-    )
+    if args.mup:
+        from mup import MuAdamW
+        # MuAdamW automatically scales LR per layer based on base shapes
+        decay_params = [p for n, p in model.named_parameters()
+                        if p.requires_grad and p.dim() >= 2]
+        nodecay_params = [p for n, p in model.named_parameters()
+                          if p.requires_grad and p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': train_cfg['weight_decay']},
+            {'params': nodecay_params, 'weight_decay': 0.0},
+        ]
+        optimizer = MuAdamW(optim_groups,
+                            lr=train_cfg['learning_rate'],
+                            betas=tuple(train_cfg['betas']))
+    else:
+        optimizer = model.configure_optimizers(
+            weight_decay=train_cfg['weight_decay'],
+            learning_rate=train_cfg['learning_rate'],
+            betas=tuple(train_cfg['betas']),
+            device_type=device.type,
+        )
 
-    # Compute training steps
+    # Gradient accumulation and batch size
     block_size = model_cfg['block_size']
     batch_size = train_cfg['batch_size']
-    tokens_per_step = batch_size * block_size
+    grad_accum_steps = train_cfg.get('grad_accum_steps', 1)
+    effective_batch_tokens = batch_size * block_size * grad_accum_steps
 
+    # Compute training steps (optimizer steps, not micro-batches)
     if args.max_steps:
         max_steps = args.max_steps
     elif train_cfg.get('max_steps'):
         max_steps = train_cfg['max_steps']
     else:
-        # 1 epoch
-        max_steps = len(train_data) // tokens_per_step
+        # 1 epoch = process all training tokens once
+        max_steps = len(train_data) // effective_batch_tokens
 
     warmup_steps = int(max_steps * train_cfg['warmup_frac'])
     max_lr = train_cfg['learning_rate']
     min_lr = max_lr * train_cfg['min_lr_frac']
     print(f"Max steps: {max_steps}, Warmup steps: {warmup_steps}")
-    print(f"Tokens per step: {tokens_per_step:,}")
+    print(f"Batch size: {batch_size}, Block size: {block_size}, "
+          f"Grad accum: {grad_accum_steps}")
+    print(f"Effective tokens/step: {effective_batch_tokens:,}")
+
+    # Resume from checkpoint
+    start_step = 0
+    if args.resume:
+        print(f"Resuming from {args.resume}...")
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt['model'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        start_step = ckpt['step'] + 1
+        print(f"  Resumed at step {start_step}")
 
     # Output directory
     config_name = Path(args.config).stem
@@ -196,45 +283,67 @@ def main():
     log_entries = []
     best_val_loss = float('inf')
     t0 = time.time()
+    throughput_samples = []  # for averaging
+    peak_gpu_mem_mb = 0.0
+
+    # Reset GPU memory stats
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats(device)
 
     model.train()
-    for step in range(max_steps):
-        # Update learning rate (µP: apply per-group lr_scale)
+    for step in range(start_step, max_steps):
+        step_start = time.time()
+
+        # Update learning rate
         lr = get_lr(step, warmup_steps, max_steps, max_lr, min_lr)
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr * param_group.get('lr_scale', 1.0)
+            param_group['lr'] = lr
 
-        # Forward + backward
-        x, y = get_batch(train_data, batch_size, block_size, device)
-        _, loss = model(x, y)
-        loss.backward()
+        # Forward + backward with gradient accumulation
+        optimizer.zero_grad(set_to_none=True)
+        accum_loss = 0.0
+        for micro_step in range(grad_accum_steps):
+            x, y = get_batch(train_data, batch_size, block_size, device)
+            _, loss = model(x, y)
+            loss = loss / grad_accum_steps  # scale for accumulation
+            loss.backward()
+            accum_loss += loss.item()
 
         # Gradient clipping
         if train_cfg['grad_clip'] > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg['grad_clip'])
 
         optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+
+        # Track throughput and GPU memory
+        step_time = time.time() - step_start
+        tokens_per_sec = effective_batch_tokens / step_time
+        throughput_samples.append(tokens_per_sec)
+
+        if device.type == 'cuda':
+            gpu_mem = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+            if gpu_mem > peak_gpu_mem_mb:
+                peak_gpu_mem_mb = gpu_mem
 
         # Logging
         if step % train_cfg['log_interval'] == 0:
             dt = time.time() - t0
-            tokens_seen = (step + 1) * tokens_per_step
-            # Show per-group LR for µP verification (only on first log)
-            if args.mup and step == 0:
-                for i, pg in enumerate(optimizer.param_groups):
-                    print(f"  param_group[{i}]: lr={pg['lr']:.2e}, "
-                          f"lr_scale={pg.get('lr_scale', 1.0):.4f}, "
-                          f"n_params={sum(p.numel() for p in pg['params']):,}")
-            print(f"step {step:6d}/{max_steps} | loss {loss.item():.4f} | "
-                  f"lr {lr:.2e} | {dt:.1f}s | {tokens_seen:,} tokens")
-            log_entries.append({
+            tokens_seen = (step + 1) * effective_batch_tokens
+            gpu_str = f" | gpu_mem {peak_gpu_mem_mb:.0f}MB" if device.type == 'cuda' else ""
+            print(f"step {step:6d}/{max_steps} | loss {accum_loss:.4f} | "
+                  f"lr {lr:.2e} | {dt:.1f}s | {tokens_seen:,} tok | "
+                  f"{tokens_per_sec:.0f} tok/s{gpu_str}")
+            log_entry = {
                 'step': step,
-                'train_loss': loss.item(),
+                'train_loss': accum_loss,
                 'lr': lr,
                 'time': dt,
                 'tokens_seen': tokens_seen,
-            })
+                'tokens_per_sec': tokens_per_sec,
+            }
+            if device.type == 'cuda':
+                log_entry['gpu_mem_mb'] = peak_gpu_mem_mb
+            log_entries.append(log_entry)
 
         # Evaluation
         if step > 0 and step % train_cfg['eval_interval'] == 0:
@@ -277,12 +386,17 @@ def main():
         torch.save(model.state_dict(), output_dir / 'best_model.pt')
         print(f"  → Final eval is new best val_loss={best_val_loss:.4f}, saved checkpoint")
 
+    avg_throughput = sum(throughput_samples) / len(throughput_samples) if throughput_samples else 0.0
+
     print(f"\n--- Training complete ---")
-    print(f"  Total time: {total_time:.1f}s")
+    print(f"  Total time: {total_time:.1f}s ({total_time/3600:.2f}h)")
     print(f"  Final train_loss: {losses['train']:.4f}")
     print(f"  Final val_loss: {losses['val']:.4f}")
     print(f"  Final val_ppl: {math.exp(losses['val']):.2f}")
     print(f"  Best val_loss: {best_val_loss:.4f}")
+    print(f"  Avg throughput: {avg_throughput:,.0f} tok/s")
+    if device.type == 'cuda':
+        print(f"  Peak GPU memory: {peak_gpu_mem_mb:.0f} MB")
 
     # Save final model + logs
     torch.save(model.state_dict(), output_dir / 'final_model.pt')
@@ -307,7 +421,11 @@ def main():
         'device': str(device),
         'mup': args.mup,
         'mup_base_width': args.mup_base_width if args.mup else None,
-        'width_mult': model.width_mult if args.mup else None,
+        'width_mult': mc.n_embd / mc.mup_base_width if args.mup else None,
+        'effective_batch_tokens': effective_batch_tokens,
+        'grad_accum_steps': grad_accum_steps,
+        'avg_tokens_per_second': avg_throughput,
+        'peak_gpu_memory_mb': peak_gpu_mem_mb if device.type == 'cuda' else None,
     }
     with open(output_dir / 'summary.json', 'w') as f:
         json.dump(summary, f, indent=2)

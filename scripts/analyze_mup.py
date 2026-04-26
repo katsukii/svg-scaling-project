@@ -89,6 +89,7 @@ def fit_power_law(n_params: np.ndarray, losses: np.ndarray, label: str = "") -> 
             "a_err": perr[0], "alpha_err": perr[1], "c_err": perr[2],
             "r_squared": r_squared,
             "label": label,
+            "pcov": pcov.tolist(),  # covariance matrix for CI estimation
         }
     except RuntimeError:
         print(f"  [WARN] Power law fit failed for {label}")
@@ -249,22 +250,50 @@ def print_comparison(sp_results: list[dict], mup_results: list[dict]) -> None:
         print(f"{name:>8s}  {params_str:>10s}  {sp_loss:>10s}  {mup_loss:>10s}  {delta_str:>10s}")
 
 
-def extrapolate(fit: dict, target_factor: float = 10.0, largest_n: int = 88_100_000) -> None:
-    """Predict loss for a model target_factor× larger than the largest."""
+def extrapolate(fit: dict, target_factor: float = 10.0, largest_n: int = 88_100_000) -> dict | None:
+    """Predict loss for a model target_factor× larger than the largest.
+
+    Returns dict with predicted loss and 95% confidence interval.
+    """
     if fit is None:
-        return
+        return None
     target_n = largest_n * target_factor
-    predicted_loss = power_law_3p(np.array([target_n]), fit["a"], fit["alpha"], fit["c"])[0]
+    a, alpha, c = fit["a"], fit["alpha"], fit["c"]
+    predicted_loss = power_law_3p(np.array([target_n]), a, alpha, c)[0]
+
+    # 95% CI via Jacobian propagation: J @ pcov @ J^T
+    ci_lower, ci_upper = None, None
+    if "pcov" in fit and fit["pcov"] is not None:
+        pcov = np.array(fit["pcov"])
+        # Jacobian of L = a * N^(-alpha) + c w.r.t. (a, alpha, c)
+        J = np.array([
+            target_n ** (-alpha),                      # dL/da
+            -a * target_n ** (-alpha) * np.log(target_n),  # dL/dalpha
+            1.0,                                        # dL/dc
+        ])
+        sigma_L = np.sqrt(J @ pcov @ J.T)
+        ci_lower = predicted_loss - 1.96 * sigma_L
+        ci_upper = predicted_loss + 1.96 * sigma_L
+
     print(f"\n=== Extrapolation ({fit['label']}) ===")
     print(f"  Largest model: {largest_n/1e6:.1f}M params")
     print(f"  Target: {target_n/1e6:.0f}M params ({target_factor:.0f}× larger)")
     print(f"  Predicted loss: {predicted_loss:.4f}")
+    if ci_lower is not None:
+        print(f"  95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
     print(f"  (using α={fit['alpha']:.4f}, c={fit['c']:.4f})")
+
+    return {
+        "target_n": target_n,
+        "predicted_loss": predicted_loss,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze µP vs SP scaling results")
-    parser.add_argument("--sp-dir", type=str, default="results/runs/scaling_study")
+    parser.add_argument("--sp-dir", type=str, default="results/runs/scaling_study_colab")
     parser.add_argument("--mup-dir", type=str, default="results/runs/mup_scaling_study")
     parser.add_argument("--mup-sweep-dir", type=str, default="results/runs/mup_lr_sweep")
     args = parser.parse_args()
@@ -316,12 +345,13 @@ def main():
     print_comparison(sp_results, mup_results)
 
     # Extrapolation
+    extrap_results = {}
     if mup_fit:
         largest = max(r["n_params"] for r in mup_results)
-        extrapolate(mup_fit, target_factor=10.0, largest_n=largest)
+        extrap_results["mup"] = extrapolate(mup_fit, target_factor=10.0, largest_n=largest)
     if sp_fit:
         largest = max(r["n_params"] for r in sp_results)
-        extrapolate(sp_fit, target_factor=10.0, largest_n=largest)
+        extrap_results["sp"] = extrapolate(sp_fit, target_factor=10.0, largest_n=largest)
 
     # Save fit results
     fit_export = {}
@@ -329,6 +359,8 @@ def main():
         fit_export["sp"] = {k: v for k, v in sp_fit.items() if k != "predict_fn"}
     if mup_fit:
         fit_export["mup"] = {k: v for k, v in mup_fit.items() if k != "predict_fn"}
+    if extrap_results:
+        fit_export["extrapolation"] = extrap_results
     if fit_export:
         out_path = plots_dir / "mup_fit_results.json"
         with open(out_path, "w") as f:

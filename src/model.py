@@ -12,6 +12,7 @@ Key differences from nanoGPT:
     - Removed GPT-2 pretrained loading (not needed for SVG)
     - Simplified config with explicit d_ff
     - Bias disabled by default (modern practice)
+    - µP support via the mup package (MuReadout, MuAdamW, set_base_shapes)
 """
 
 import math
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
+from mup import MuReadout
 
 
 @dataclass
@@ -128,8 +131,6 @@ class GPT(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        # µP: width multiplier relative to base model (Tiny)
-        self.width_mult = config.n_embd / config.mup_base_width if config.mup else 1.0
 
         self.transformer = nn.ModuleDict(dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
@@ -138,10 +139,17 @@ class GPT(nn.Module):
             h=nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)]),
             ln_f=LayerNorm(config.n_embd, bias=config.bias),
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-        # Weight tying: share embedding and output projection weights
-        self.transformer.wte.weight = self.lm_head.weight
+        # Output head: MuReadout for µP (handles logit scaling automatically),
+        # nn.Linear for standard parameterization
+        if config.mup:
+            self.lm_head = MuReadout(config.n_embd, config.vocab_size, bias=False)
+            # No weight tying under µP — embedding and readout have different
+            # scaling requirements (readout needs 1/width_mult output scaling)
+        else:
+            self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+            # Weight tying: share embedding and output projection weights
+            self.transformer.wte.weight = self.lm_head.weight
 
         # Initialize weights
         self.apply(self._init_weights)
@@ -158,7 +166,7 @@ class GPT(nn.Module):
         return n_params
 
     def _init_weights(self, module: nn.Module) -> None:
-        if isinstance(module, nn.Linear):
+        if isinstance(module, (nn.Linear, MuReadout)):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
@@ -195,10 +203,8 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
 
         if targets is not None:
+            # MuReadout automatically divides by width_mult in µP mode
             logits = self.lm_head(x)
-            # µP: scale logits by 1/width_mult to stabilize output
-            if self.config.mup:
-                logits = logits / self.width_mult
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 targets.view(-1),
@@ -207,8 +213,6 @@ class GPT(nn.Module):
         else:
             # Inference: only compute logits for last position
             logits = self.lm_head(x[:, [-1], :])
-            if self.config.mup:
-                logits = logits / self.width_mult
             loss = None
 
         return logits, loss
@@ -225,33 +229,17 @@ class GPT(nn.Module):
         Following nanoGPT: weight tensors (matmuls, embeddings) get decay,
         biases and LayerNorm params do not.
 
-        µP mode splits 2D params into input (embeddings) and hidden (attention/MLP)
-        groups with per-layer LR scaling: hidden layers get lr * (1/width_mult).
+        Note: For µP mode, use MuAdamW from train.py instead of this method.
+        MuAdamW handles per-layer LR scaling automatically.
         """
-        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-
-        if self.config.mup:
-            # µP: 3 groups with lr_scale metadata
-            input_names = {'transformer.wte.weight', 'transformer.wpe.weight'}
-            input_params = [p for n, p in param_dict.items() if n in input_names]
-            hidden_params = [p for n, p in param_dict.items()
-                            if p.dim() >= 2 and n not in input_names]
-            nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-            optim_groups = [
-                {'params': input_params, 'weight_decay': weight_decay, 'lr_scale': 1.0},
-                {'params': hidden_params, 'weight_decay': weight_decay,
-                 'lr_scale': 1.0 / self.width_mult},
-                {'params': nodecay_params, 'weight_decay': 0.0, 'lr_scale': 1.0},
-            ]
-        else:
-            # SP: 2 groups, all lr_scale=1.0
-            decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-            nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-            optim_groups = [
-                {'params': decay_params, 'weight_decay': weight_decay, 'lr_scale': 1.0},
-                {'params': nodecay_params, 'weight_decay': 0.0, 'lr_scale': 1.0},
-            ]
-
+        decay_params = [p for n, p in self.named_parameters()
+                        if p.requires_grad and p.dim() >= 2]
+        nodecay_params = [p for n, p in self.named_parameters()
+                          if p.requires_grad and p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0},
+        ]
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
@@ -262,15 +250,17 @@ class GPT(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         top_k: int | None = None,
+        top_p: float | None = None,
         eos_token_id: int | None = None,
     ) -> torch.Tensor:
-        """Autoregressive generation.
+        """Autoregressive generation with top-k and/or nucleus (top-p) sampling.
 
         Args:
             idx: conditioning sequence, shape (B, T)
             max_new_tokens: number of tokens to generate
             temperature: sampling temperature
             top_k: if set, only sample from top-k tokens
+            top_p: if set, nucleus sampling — keep smallest set with cumprob >= top_p
             eos_token_id: if set, stop when this token is generated
 
         Returns:
@@ -282,9 +272,24 @@ class GPT(nn.Module):
             logits, _ = self(idx_cond)
             logits = logits[:, -1, :] / temperature
 
+            # Top-k filtering
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float('Inf')
+
+            # Top-p (nucleus) filtering
+            if top_p is not None:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                # Remove tokens with cumulative probability above top_p
+                sorted_indices_to_remove = cumulative_probs > top_p
+                # Keep at least one token
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = False
+                # Scatter back to original indices
+                indices_to_remove = sorted_indices_to_remove.scatter(
+                    1, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = -float('Inf')
 
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)

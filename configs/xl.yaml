@@ -10,7 +10,8 @@ model:
   bias: false
 
 training:
-  batch_size: 8        # reduced for memory
+  batch_size: 8        # reduced for memory (effective = 8 * 1024 * 2 = 16,384 tok/step)
+  grad_accum_steps: 2  # gradient accumulation to match other models' token batch size
   learning_rate: 3.0e-4
   weight_decay: 0.1
   betas: [0.9, 0.95]

@@ -59,6 +59,7 @@ def tokenize_split(
     tokenizer: Tokenizer,
     input_path: Path,
     output_path: Path,
+    max_token_len: int | None = 2048,
 ) -> dict:
     """Tokenize a data split and save as numpy binary.
 
@@ -71,6 +72,7 @@ def tokenize_split(
         tokenizer: trained tokenizer
         input_path: path to split .jsonl file
         output_path: path to save .bin file
+        max_token_len: max sequence length (incl. BOS/EOS); None = no filter
 
     Returns:
         dict with tokenization statistics
@@ -80,6 +82,7 @@ def tokenize_split(
 
     all_ids: list[int] = []
     seq_lengths: list[int] = []
+    filtered_too_long = 0
 
     with open(input_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -90,6 +93,11 @@ def tokenize_split(
             svg_text = record['svg']
             encoded = tokenizer.encode(svg_text)
             ids = [bos_id] + encoded.ids + [eos_id]
+
+            if max_token_len is not None and len(ids) > max_token_len:
+                filtered_too_long += 1
+                continue
+
             all_ids.extend(ids)
             seq_lengths.append(len(ids))
 
@@ -102,6 +110,7 @@ def tokenize_split(
     stats = {
         'num_sequences': n,
         'total_tokens': len(all_ids),
+        'filtered_too_long': filtered_too_long,
         'min_len': int(min(seq_lengths)) if n else 0,
         'max_len': int(max(seq_lengths)) if n else 0,
         'median_len': int(seq_lengths_sorted[n // 2]) if n else 0,
@@ -123,6 +132,8 @@ def main():
                         help='Directory to save tokenized .bin files')
     parser.add_argument('--vocab-size', type=int, default=4096,
                         help='BPE vocabulary size')
+    parser.add_argument('--max-token-len', type=int, default=2048,
+                        help='Max token sequence length filter (default: 2048, 0 = no filter)')
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -137,6 +148,9 @@ def main():
     tokenizer = train_tokenizer(input_dir / 'train.jsonl', args.vocab_size, tokenizer_path)
 
     # Tokenize each split
+    max_token_len = args.max_token_len if args.max_token_len > 0 else None
+    print(f"Max token length filter: {max_token_len}")
+
     all_stats = {}
     for split in ['train', 'val', 'test']:
         print(f"\nTokenizing {split}...")
@@ -144,9 +158,11 @@ def main():
             tokenizer,
             input_dir / f'{split}.jsonl',
             output_dir / f'{split}.bin',
+            max_token_len=max_token_len,
         )
         all_stats[split] = stats
         print(f"  Sequences: {stats['num_sequences']}")
+        print(f"  Filtered (too long): {stats['filtered_too_long']}")
         print(f"  Total tokens: {stats['total_tokens']:,}")
         print(f"  Token lengths: min={stats['min_len']}, median={stats['median_len']}, "
               f"mean={stats['mean_len']}, max={stats['max_len']}")
@@ -157,16 +173,6 @@ def main():
     with open(stats_path, 'w') as f:
         json.dump(all_stats, f, indent=2)
     print(f"\nStats saved to {stats_path}")
-
-    # Recommendation for max_seq_len
-    train_stats = all_stats['train']
-    print(f"\n--- max_seq_len recommendation ---")
-    if train_stats['p95_len'] <= 1024:
-        print(f"  p95={train_stats['p95_len']} <= 1024 → max_seq_len=1024 recommended")
-    elif train_stats['p95_len'] <= 2048:
-        print(f"  p95={train_stats['p95_len']} <= 2048 → max_seq_len=2048 recommended")
-    else:
-        print(f"  p95={train_stats['p95_len']} > 2048 → consider filtering long sequences")
 
     # Quick decode test
     print(f"\n--- Decode test ---")
