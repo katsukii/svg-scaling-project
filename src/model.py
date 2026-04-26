@@ -32,6 +32,9 @@ class ModelConfig:
     d_ff: int = 512  # FFN intermediate size (typically 4 * n_embd)
     dropout: float = 0.0
     bias: bool = False
+    # µP (Maximal Update Parameterization) settings
+    mup: bool = False
+    mup_base_width: int = 128  # Tiny model's n_embd as base width
 
 
 class LayerNorm(nn.Module):
@@ -59,6 +62,9 @@ class CausalSelfAttention(nn.Module):
         self.resid_dropout = nn.Dropout(config.dropout)
         self.n_head = config.n_head
         self.n_embd = config.n_embd
+        # µP: attention scaling = 1/d_head instead of 1/√d_head
+        d_head = config.n_embd // config.n_head
+        self.attn_scale = 1.0 / d_head if config.mup else None  # None = PyTorch default 1/√d_head
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.size()
@@ -70,11 +76,13 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
         # Flash attention (PyTorch >= 2.0)
+        # µP uses scale=1/d_head; SP uses default scale=1/√d_head
         y = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=None,
             dropout_p=self.attn_dropout.p if self.training else 0.0,
             is_causal=True,
+            scale=self.attn_scale,
         )
         y = y.transpose(1, 2).contiguous().view(B, T, C)
 
@@ -120,6 +128,8 @@ class GPT(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
+        # µP: width multiplier relative to base model (Tiny)
+        self.width_mult = config.n_embd / config.mup_base_width if config.mup else 1.0
 
         self.transformer = nn.ModuleDict(dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
@@ -186,6 +196,9 @@ class GPT(nn.Module):
 
         if targets is not None:
             logits = self.lm_head(x)
+            # µP: scale logits by 1/width_mult to stabilize output
+            if self.config.mup:
+                logits = logits / self.width_mult
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 targets.view(-1),
@@ -194,6 +207,8 @@ class GPT(nn.Module):
         else:
             # Inference: only compute logits for last position
             logits = self.lm_head(x[:, [-1], :])
+            if self.config.mup:
+                logits = logits / self.width_mult
             loss = None
 
         return logits, loss
@@ -209,14 +224,34 @@ class GPT(nn.Module):
 
         Following nanoGPT: weight tensors (matmuls, embeddings) get decay,
         biases and LayerNorm params do not.
+
+        µP mode splits 2D params into input (embeddings) and hidden (attention/MLP)
+        groups with per-layer LR scaling: hidden layers get lr * (1/width_mult).
         """
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0},
-        ]
+
+        if self.config.mup:
+            # µP: 3 groups with lr_scale metadata
+            input_names = {'transformer.wte.weight', 'transformer.wpe.weight'}
+            input_params = [p for n, p in param_dict.items() if n in input_names]
+            hidden_params = [p for n, p in param_dict.items()
+                            if p.dim() >= 2 and n not in input_names]
+            nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+            optim_groups = [
+                {'params': input_params, 'weight_decay': weight_decay, 'lr_scale': 1.0},
+                {'params': hidden_params, 'weight_decay': weight_decay,
+                 'lr_scale': 1.0 / self.width_mult},
+                {'params': nodecay_params, 'weight_decay': 0.0, 'lr_scale': 1.0},
+            ]
+        else:
+            # SP: 2 groups, all lr_scale=1.0
+            decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+            nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+            optim_groups = [
+                {'params': decay_params, 'weight_decay': weight_decay, 'lr_scale': 1.0},
+                {'params': nodecay_params, 'weight_decay': 0.0, 'lr_scale': 1.0},
+            ]
+
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 

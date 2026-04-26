@@ -16,7 +16,13 @@ from tokenizers import Tokenizer
 from model import ModelConfig, GPT
 
 
-def load_model(config_path: str, checkpoint_path: str, device: torch.device) -> GPT:
+def load_model(
+    config_path: str,
+    checkpoint_path: str,
+    device: torch.device,
+    mup: bool = False,
+    mup_base_width: int = 128,
+) -> GPT:
     """Load a trained model from config + checkpoint."""
     with open(config_path) as f:
         cfg = yaml.safe_load(f)['model']
@@ -30,6 +36,8 @@ def load_model(config_path: str, checkpoint_path: str, device: torch.device) -> 
         d_ff=cfg['d_ff'],
         dropout=cfg['dropout'],
         bias=cfg['bias'],
+        mup=mup,
+        mup_base_width=mup_base_width,
     )
     model = GPT(mc).to(device)
 
@@ -114,6 +122,10 @@ def main():
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Save samples to this directory')
     parser.add_argument('--device', type=str, default=None)
+    parser.add_argument('--mup', action='store_true',
+                        help='Use µP parameterization (must match training)')
+    parser.add_argument('--mup-base-width', type=int, default=128,
+                        help='Base width for µP (default: 128)')
     args = parser.parse_args()
 
     # Device
@@ -129,7 +141,8 @@ def main():
     print(f"Device: {device}")
 
     # Load model and tokenizer
-    model = load_model(args.config, args.checkpoint, device)
+    model = load_model(args.config, args.checkpoint, device,
+                       mup=args.mup, mup_base_width=args.mup_base_width)
     tokenizer = Tokenizer.from_file(args.tokenizer)
     print(f"Model loaded from {args.checkpoint}")
 

@@ -97,6 +97,10 @@ def main():
     parser.add_argument('--device', type=str, default=None, help='Device (cpu/cuda/mps)')
     parser.add_argument('--learning-rate', type=float, default=None,
                         help='Override learning rate from config')
+    parser.add_argument('--mup', action='store_true',
+                        help='Enable µP (Maximal Update Parameterization)')
+    parser.add_argument('--mup-base-width', type=int, default=128,
+                        help='Base width for µP (default: 128 = Tiny n_embd)')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -141,10 +145,15 @@ def main():
         d_ff=model_cfg['d_ff'],
         dropout=model_cfg['dropout'],
         bias=model_cfg['bias'],
+        mup=args.mup,
+        mup_base_width=args.mup_base_width,
     )
     model = GPT(mc).to(device)
     n_params = model.get_num_params()
-    print(f"Model parameters: {n_params:,} ({n_params/1e6:.2f}M)")
+    param_mode = "µP" if args.mup else "SP"
+    print(f"Model parameters: {n_params:,} ({n_params/1e6:.2f}M) [{param_mode}]")
+    if args.mup:
+        print(f"  µP width_mult={model.width_mult:.3f}, base_width={args.mup_base_width}")
 
     # Optimizer
     optimizer = model.configure_optimizers(
@@ -190,10 +199,10 @@ def main():
 
     model.train()
     for step in range(max_steps):
-        # Update learning rate
+        # Update learning rate (µP: apply per-group lr_scale)
         lr = get_lr(step, warmup_steps, max_steps, max_lr, min_lr)
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = lr * param_group.get('lr_scale', 1.0)
 
         # Forward + backward
         x, y = get_batch(train_data, batch_size, block_size, device)
@@ -211,6 +220,12 @@ def main():
         if step % train_cfg['log_interval'] == 0:
             dt = time.time() - t0
             tokens_seen = (step + 1) * tokens_per_step
+            # Show per-group LR for µP verification (only on first log)
+            if args.mup and step == 0:
+                for i, pg in enumerate(optimizer.param_groups):
+                    print(f"  param_group[{i}]: lr={pg['lr']:.2e}, "
+                          f"lr_scale={pg.get('lr_scale', 1.0):.4f}, "
+                          f"n_params={sum(p.numel() for p in pg['params']):,}")
             print(f"step {step:6d}/{max_steps} | loss {loss.item():.4f} | "
                   f"lr {lr:.2e} | {dt:.1f}s | {tokens_seen:,} tokens")
             log_entries.append({
@@ -290,6 +305,9 @@ def main():
         'final_val_ppl': math.exp(losses['val']),
         'best_val_loss': best_val_loss,
         'device': str(device),
+        'mup': args.mup,
+        'mup_base_width': args.mup_base_width if args.mup else None,
+        'width_mult': model.width_mult if args.mup else None,
     }
     with open(output_dir / 'summary.json', 'w') as f:
         json.dump(summary, f, indent=2)
