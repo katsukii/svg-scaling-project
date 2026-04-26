@@ -41,6 +41,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Docs (assignment PDF etc.)
+docs/
+
 # Secrets
 .env
 *.key

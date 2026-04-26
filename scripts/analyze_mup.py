@@ -345,8 +345,8 @@ def extrapolate(fit: dict, target_factor: float = 10.0, largest_n: int = 88_100_
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze µP vs SP scaling results")
-    parser.add_argument("--sp-dir", type=str, default="results/runs/scaling_study")
-    parser.add_argument("--mup-dir", type=str, default="results/runs/mup_scaling_study")
+    parser.add_argument("--sp-dir", type=str, default="results/runs/sp")
+    parser.add_argument("--mup-dir", type=str, default="results/runs/mup")
     parser.add_argument("--sp-sweep-dir", type=str, default="results/runs/lr_sweep")
     parser.add_argument("--mup-sweep-dir", type=str, default="results/runs/mup_lr_sweep")
     args = parser.parse_args()

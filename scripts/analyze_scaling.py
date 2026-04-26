@@ -167,7 +167,7 @@ def plot_scaling_law(
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze scaling study results")
-    parser.add_argument("--scaling-dir", type=str, default="results/runs/scaling_study")
+    parser.add_argument("--scaling-dir", type=str, default="results/runs/sp")
     args = parser.parse_args()
 
     scaling_dir = Path(args.scaling_dir)
