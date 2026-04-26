@@ -151,14 +151,14 @@ def check_structural_validity(svg_text: str) -> dict:
 
 
 def evaluate_samples(samples_dir: Path) -> dict:
-    """Evaluate all generated outputs in a directory.
+    """Evaluate all generated outputs in a directory (recursively).
 
-    Counts both complete SVGs (*.svg) and incomplete outputs
-    (*_incomplete.txt) so that the denominator reflects the total number
-    of generation attempts, not just successes.
+    Searches samples_dir and all subdirectories for complete SVGs (*.svg)
+    and incomplete outputs (*_incomplete.txt) so that the denominator
+    reflects the total number of generation attempts, not just successes.
     """
-    svg_files = sorted(samples_dir.glob('*.svg'))
-    incomplete_files = sorted(samples_dir.glob('*_incomplete.txt'))
+    svg_files = sorted(samples_dir.rglob('*.svg'))
+    incomplete_files = sorted(samples_dir.rglob('*_incomplete.txt'))
     total = len(svg_files) + len(incomplete_files)
 
     if total == 0:
@@ -237,8 +237,8 @@ def render_sample_grid(
     grid_cols: int = 5,
     cell_size: int = 128,
 ) -> None:
-    """Render SVG samples into a grid image."""
-    svg_files = sorted(samples_dir.glob('*.svg'))
+    """Render SVG samples into a grid image (searches recursively)."""
+    svg_files = sorted(samples_dir.rglob('*.svg'))
     if not svg_files:
         return
 

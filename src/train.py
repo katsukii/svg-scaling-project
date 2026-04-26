@@ -31,8 +31,11 @@ class EpochIterator:
     """Sequential, shuffled-window iterator for true epoch training.
 
     Divides the data into non-overlapping windows of size block_size+1,
-    shuffles them, and yields batches without replacement. One full pass
-    through all windows = one epoch.
+    shuffles them, and yields batches without replacement.  Every window
+    is consumed before the next epoch starts—including a final partial
+    batch smaller than batch_size (if any).
+
+    One full pass through all windows = one epoch.
     """
 
     def __init__(
@@ -52,26 +55,31 @@ class EpochIterator:
         window_size = block_size + 1
         n_windows = len(data) // window_size
         self.all_starts = np.arange(n_windows) * window_size
+        self.n_windows = n_windows
         self.rng = np.random.RandomState(seed)
         self._shuffle()
 
     def _shuffle(self) -> None:
         """Shuffle window order for a new epoch."""
-        self.perm = self.rng.permutation(len(self.all_starts))
+        self.perm = self.rng.permutation(self.n_windows)
         self.cursor = 0
 
     @property
-    def steps_per_epoch(self) -> int:
-        """Number of batches (not optimizer steps) per epoch."""
-        return len(self.all_starts) // self.batch_size
+    def batches_per_epoch(self) -> int:
+        """Number of batches per epoch (including final partial batch)."""
+        return math.ceil(self.n_windows / self.batch_size)
 
     def get_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return the next batch, reshuffling if the epoch is exhausted."""
-        if self.cursor + self.batch_size > len(self.perm):
+        """Return the next batch. Includes partial batches at epoch end.
+
+        When all windows are exhausted, reshuffles for the next epoch.
+        """
+        if self.cursor >= len(self.perm):
             self._shuffle()
 
-        idx = self.perm[self.cursor:self.cursor + self.batch_size]
-        self.cursor += self.batch_size
+        end = min(self.cursor + self.batch_size, len(self.perm))
+        idx = self.perm[self.cursor:end]
+        self.cursor = end
 
         starts = self.all_starts[idx]
         bs = self.block_size
@@ -84,6 +92,20 @@ class EpochIterator:
             for s in starts
         ])
         return x.to(self.device), y.to(self.device)
+
+    def state_dict(self) -> dict:
+        """Serialize iterator state for checkpointing."""
+        return {
+            'cursor': self.cursor,
+            'perm': self.perm.tolist(),
+            'rng_state': self.rng.get_state(),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore iterator state from a checkpoint."""
+        self.cursor = state['cursor']
+        self.perm = np.array(state['perm'])
+        self.rng.set_state(state['rng_state'])
 
 
 def get_batch(
@@ -301,10 +323,11 @@ def main():
     train_iter = EpochIterator(train_data, batch_size, block_size, device)
 
     # Compute training steps (optimizer steps, not micro-batches)
-    # steps_per_epoch is based on non-overlapping windows, so 1 epoch =
-    # every token seen exactly once (no gaps, no repeats).
-    batches_per_epoch = train_iter.steps_per_epoch
-    steps_per_epoch = batches_per_epoch // grad_accum_steps
+    # batches_per_epoch includes the final partial batch (ceil division),
+    # so every window is consumed.  steps_per_epoch uses ceil again to
+    # ensure the last accumulation group is not silently dropped.
+    batches_per_epoch = train_iter.batches_per_epoch
+    steps_per_epoch = math.ceil(batches_per_epoch / grad_accum_steps)
 
     if args.max_steps:
         max_steps = args.max_steps
@@ -317,6 +340,9 @@ def main():
     warmup_steps = int(max_steps * train_cfg['warmup_frac'])
     max_lr = train_cfg['learning_rate']
     min_lr = max_lr * train_cfg['min_lr_frac']
+    n_windows = train_iter.n_windows
+    print(f"Windows: {n_windows} (each {block_size+1} tok, "
+          f"covers {n_windows * (block_size+1):,}/{len(train_data):,} tokens)")
     print(f"Max steps: {max_steps}, Warmup steps: {warmup_steps}")
     print(f"Steps per epoch: {steps_per_epoch} (batches_per_epoch={batches_per_epoch})")
     print(f"Batch size: {batch_size}, Block size: {block_size}, "
@@ -331,7 +357,17 @@ def main():
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
         start_step = ckpt['step'] + 1
-        print(f"  Resumed at step {start_step}")
+        if 'train_iter' in ckpt:
+            train_iter.load_state_dict(ckpt['train_iter'])
+            print(f"  Resumed at step {start_step} (iterator state restored)")
+        else:
+            # Legacy checkpoint without iterator state: fast-forward
+            # the iterator so it doesn't replay the same data order.
+            # Advance cursor by the number of batches already consumed.
+            batches_consumed = start_step * grad_accum_steps
+            for _ in range(batches_consumed):
+                train_iter.get_batch()
+            print(f"  Resumed at step {start_step} (iterator fast-forwarded {batches_consumed} batches)")
 
     # Output directory
     config_name = Path(args.config).stem
@@ -434,6 +470,7 @@ def main():
                 'step': step,
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
+                'train_iter': train_iter.state_dict(),
                 'config': cfg,
             }, output_dir / f'checkpoint_{step}.pt')
 
@@ -468,6 +505,7 @@ def main():
         'step': max_steps,
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
+        'train_iter': train_iter.state_dict(),
         'config': cfg,
     }, output_dir / 'final_checkpoint.pt')
 
