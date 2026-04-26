@@ -6,7 +6,6 @@ train/val/test splits into binary files for efficient training.
 
 import argparse
 import json
-import struct
 from pathlib import Path
 
 import numpy as np
@@ -167,6 +166,12 @@ def main():
         print(f"  Token lengths: min={stats['min_len']}, median={stats['median_len']}, "
               f"mean={stats['mean_len']}, max={stats['max_len']}")
         print(f"  Percentiles: p90={stats['p90_len']}, p95={stats['p95_len']}, p99={stats['p99_len']}")
+
+    # Check 100M token minimum (project spec requirement)
+    train_tokens = all_stats['train']['total_tokens']
+    if train_tokens < 100_000_000:
+        print(f"\n  [WARN] Training set has {train_tokens:,} tokens, below the 100M minimum.")
+        print(f"         Consider raising --max-token-len or adding supplementary datasets.")
 
     # Save stats
     stats_path = output_dir / 'tokenize_stats.json'

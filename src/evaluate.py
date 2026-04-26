@@ -22,6 +22,7 @@ import argparse
 import io
 import json
 import math
+import re
 from pathlib import Path
 
 import cairosvg
@@ -38,28 +39,53 @@ def compute_test_perplexity(
     test_data: np.ndarray,
     batch_size: int,
     block_size: int,
-    eval_steps: int,
     device: torch.device,
 ) -> dict:
-    """Compute perplexity on test data."""
+    """Compute perplexity over the full test set using non-overlapping windows.
+
+    Iterates over all non-overlapping windows in test_data so the result
+    is deterministic and covers the entire test set, not a random sample.
+    """
     model.eval()
+    window_size = block_size + 1
+    n_windows = len(test_data) // window_size
+
+    if n_windows == 0:
+        return {'test_loss': float('nan'), 'test_perplexity': float('nan'),
+                'n_windows': 0}
+
     total_loss = 0.0
+    total_tokens = 0
+
     with torch.no_grad():
-        for _ in range(eval_steps):
-            max_start = len(test_data) - block_size - 1
-            ix = torch.randint(max_start, (batch_size,))
-            x = torch.stack([torch.from_numpy(
-                test_data[i:i + block_size].astype(np.int64)) for i in ix])
-            y = torch.stack([torch.from_numpy(
-                test_data[i + 1:i + 1 + block_size].astype(np.int64)) for i in ix])
+        for batch_start in range(0, n_windows, batch_size):
+            batch_end = min(batch_start + batch_size, n_windows)
+            actual_bs = batch_end - batch_start
+
+            x = torch.stack([
+                torch.from_numpy(
+                    test_data[i * window_size:i * window_size + block_size]
+                    .astype(np.int64))
+                for i in range(batch_start, batch_end)
+            ])
+            y = torch.stack([
+                torch.from_numpy(
+                    test_data[i * window_size + 1:i * window_size + 1 + block_size]
+                    .astype(np.int64))
+                for i in range(batch_start, batch_end)
+            ])
             x, y = x.to(device), y.to(device)
             _, loss = model(x, y)
-            total_loss += loss.item()
-    avg_loss = total_loss / eval_steps
+            batch_tokens = actual_bs * block_size
+            total_loss += loss.item() * batch_tokens
+            total_tokens += batch_tokens
+
+    avg_loss = total_loss / total_tokens
     return {
         'test_loss': avg_loss,
         'test_perplexity': math.exp(avg_loss),
-        'eval_steps': eval_steps,
+        'n_windows': n_windows,
+        'total_tokens': total_tokens,
     }
 
 
@@ -80,6 +106,15 @@ def check_svg_render(svg_text: str) -> bool:
         return True
     except Exception:
         return False
+
+
+# Regex for CSS numeric values with optional units: "10", "1.5px", "50%", "2em"
+_CSS_NUMERIC_RE = re.compile(
+    r'^[+-]?(\d+\.?\d*|\.\d+)\s*(%|px|pt|pc|em|ex|rem|in|cm|mm|vw|vh)?$'
+)
+
+# CSS keyword values that are valid for numeric-like attributes
+_CSS_KEYWORDS = {'none', 'inherit', 'initial', 'auto', 'unset'}
 
 
 def check_structural_validity(svg_text: str) -> dict:
@@ -132,14 +167,12 @@ def check_structural_validity(svg_text: str) -> dict:
                 # Strip namespace prefix
                 local_name = attr_name.split('}')[1] if '}' in attr_name else attr_name
                 if local_name in numeric_attrs:
-                    # Allow percentage (e.g. "50%"), units (e.g. "10px")
-                    val = attr_val.strip().rstrip('%').rstrip('pxemin')
-                    if val:
-                        try:
-                            float(val)
-                        except ValueError:
-                            attr_ok = False
-                            break
+                    val = attr_val.strip()
+                    if not val or val in _CSS_KEYWORDS:
+                        continue  # valid CSS keyword values
+                    if not _CSS_NUMERIC_RE.match(val):
+                        attr_ok = False
+                        break
             if not attr_ok:
                 break
         checks['valid_attributes'] = attr_ok
@@ -286,8 +319,6 @@ def main():
                         help='Path to test.bin for perplexity computation')
     parser.add_argument('--output-dir', type=str, default='results/evaluation',
                         help='Output directory for metrics and grid')
-    parser.add_argument('--eval-steps', type=int, default=100,
-                        help='Number of batches for perplexity estimation')
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--device', type=str, default=None)
     parser.add_argument('--mup', action='store_true')
@@ -319,8 +350,7 @@ def main():
         test_data = np.fromfile(args.test_data, dtype=np.uint16)
         block_size = model.config.block_size
         ppl_metrics = compute_test_perplexity(
-            model, test_data, args.batch_size, block_size,
-            args.eval_steps, device,
+            model, test_data, args.batch_size, block_size, device,
         )
         all_metrics['perplexity'] = ppl_metrics
         print(f"  Test loss: {ppl_metrics['test_loss']:.4f}")

@@ -125,7 +125,8 @@ def main():
     parser.add_argument('--prefix', type=str, default='<svg')
     parser.add_argument('--max-tokens', type=int, default=512)
     parser.add_argument('--temperature', type=float, default=0.8)
-    parser.add_argument('--top-k', type=int, default=50)
+    parser.add_argument('--top-k', type=int, default=50,
+                        help='Top-k sampling (0 to disable)')
     parser.add_argument('--top-p', type=float, default=None,
                         help='Nucleus sampling threshold (e.g. 0.95)')
     parser.add_argument('--output-dir', type=str, default=None,
@@ -155,6 +156,9 @@ def main():
     tokenizer = Tokenizer.from_file(args.tokenizer)
     print(f"Model loaded from {args.checkpoint}")
 
+    # Normalize top-k: 0 means disabled
+    top_k = args.top_k if args.top_k > 0 else None
+
     # Output directory
     if args.output_dir:
         out_dir = Path(args.output_dir)
@@ -169,7 +173,7 @@ def main():
             prefix=args.prefix,
             max_new_tokens=args.max_tokens,
             temperature=args.temperature,
-            top_k=args.top_k,
+            top_k=top_k,
             top_p=args.top_p,
             device=device,
         )

@@ -48,31 +48,31 @@ def load_training_logs(sweep_dir: Path) -> dict[str, list[dict]]:
 def print_summary_table(results: list[dict]) -> None:
     """Print a comparison table of LR sweep results."""
     print("\n=== LR Sweep Results ===\n")
-    print(f"{'LR':>10s}  {'Best Val Loss':>13s}  {'Final Val Loss':>14s}  "
+    print(f"{'LR':>10s}  {'Final Val Loss':>14s}  {'Best Val Loss':>13s}  "
           f"{'Final PPL':>10s}  {'Time (s)':>9s}")
     print("-" * 65)
 
-    for r in sorted(results, key=lambda x: x["best_val_loss"]):
+    for r in sorted(results, key=lambda x: x["final_val_loss"]):
         lr = r["config"]["training"]["learning_rate"]
-        print(f"{lr:>10.1e}  {r['best_val_loss']:>13.4f}  {r['final_val_loss']:>14.4f}  "
+        print(f"{lr:>10.1e}  {r['final_val_loss']:>14.4f}  {r['best_val_loss']:>13.4f}  "
               f"{r['final_val_ppl']:>10.2f}  {r['total_time_s']:>9.1f}")
 
-    best = min(results, key=lambda x: x["best_val_loss"])
+    best = min(results, key=lambda x: x["final_val_loss"])
     best_lr = best["config"]["training"]["learning_rate"]
-    print(f"\n→ Optimal LR: {best_lr:.1e} (best_val_loss={best['best_val_loss']:.4f})")
+    print(f"\n→ Optimal LR: {best_lr:.1e} (final_val_loss={best['final_val_loss']:.4f})")
 
 
 def plot_lr_comparison(results: list[dict], output_path: Path) -> None:
     """Plot LR vs best val loss."""
     results_sorted = sorted(results, key=lambda x: x["config"]["training"]["learning_rate"])
     lrs = [r["config"]["training"]["learning_rate"] for r in results_sorted]
-    losses = [r["best_val_loss"] for r in results_sorted]
+    losses = [r["final_val_loss"] for r in results_sorted]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(lrs, losses, "o-", markersize=8, linewidth=2)
     ax.set_xscale("log")
     ax.set_xlabel("Learning Rate")
-    ax.set_ylabel("Best Validation Loss")
+    ax.set_ylabel("Validation Loss (after 1 epoch)")
     ax.set_title("LR Sweep: Tiny Model (1.3M params)")
     ax.grid(True, alpha=0.3)
 

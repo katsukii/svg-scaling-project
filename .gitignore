@@ -50,3 +50,7 @@ reference/
 
 # Wandb
 wandb/
+
+# Zipped result archives
+results/*.zip
+*.zip

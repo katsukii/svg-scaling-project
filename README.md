@@ -24,14 +24,24 @@ pip install -r requirements.txt
 
 ### 1. Preprocessing
 
-Download and clean SVG data from HuggingFace (`nicholasKluge/svg-icons-simple`):
+Download and clean SVG data from HuggingFace (`starvector/svg-icons-simple`):
 
 ```bash
+# Download from HuggingFace and preprocess in one step
 python src/preprocess.py \
-    --input-dir data/raw/svg-icons-simple \
+    --download starvector/svg-icons-simple \
+    --output-dir data/processed \
+    --min-len 50
+
+# Or, if data is already saved locally (--download saves to
+# data/raw/starvector_svg-icons-simple by default)
+python src/preprocess.py \
+    --input-dir data/raw/starvector_svg-icons-simple \
     --output-dir data/processed \
     --min-len 50
 ```
+
+If the dataset has only a `train` split, the script automatically creates 98%/1%/1% train/val/test splits by file to avoid data leakage.
 
 This pipeline:
 - Strips HTML/XML comments
@@ -65,9 +75,9 @@ Five model sizes are provided in `configs/`:
 | Config | Params | Layers | Heads | d_model | d_ff  |
 |--------|--------|--------|-------|---------|-------|
 | tiny   | ~1.3M  | 4      | 4     | 128     | 512   |
-| small  | ~5.8M  | 6      | 6     | 256     | 1024  |
-| medium | ~21.3M | 8      | 8     | 512     | 2048  |
-| large  | ~47.4M | 10     | 10    | 640     | 2560  |
+| small  | ~3.4M  | 6      | 6     | 192     | 768   |
+| medium | ~12.2M | 6      | 6     | 384     | 1536  |
+| large  | ~33.6M | 10     | 8     | 512     | 2048  |
 | xl     | ~88.1M | 12     | 12    | 768     | 3072  |
 
 All models use the same effective token batch size (16,384 tokens/step). The XL config uses gradient accumulation (`grad_accum_steps: 2`) to match this while fitting in GPU memory.
@@ -184,7 +194,9 @@ svg-scaling-project/
 │   ├── coord_check.py    # muP coordinate check
 │   ├── plot_token_histogram.py
 │   ├── render_examples.py
-│   └── colab_*.ipynb     # Colab training notebooks
+│   ├── colab_lr_sweep.ipynb      # Part 2: SP LR sweep
+│   ├── colab_scaling_study.ipynb # Part 2: SP scaling study (reads optimal LR from sweep)
+│   └── colab_mup_experiments.ipynb # Part 3: µP LR sweep + scaling study
 ├── src/
 │   ├── preprocess.py     # SVG cleaning and filtering pipeline
 │   ├── tokenize_data.py  # BPE tokenization

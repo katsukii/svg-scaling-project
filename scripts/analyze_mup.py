@@ -1,10 +1,10 @@
 """Analyze µP results: LR sweep, SP vs µP scaling comparison, LR transfer.
 
 Produces:
-  1. µP LR Sweep plot — LR vs best_val_loss
+  1. µP LR Sweep plot — LR vs final_val_loss
   2. SP vs µP Scaling Law — overlaid power law fits on log-log plot
   3. LR Transfer plot — showing SP LR=3e-3 fails at scale, µP stays stable
-  4. Comparison table — SP vs µP per-model best_val_loss
+  4. Comparison table — SP vs µP per-model final_val_loss
   5. Extrapolation — predict loss for 10× model using µP fit
 
 Usage:
@@ -43,7 +43,12 @@ def load_results(results_dir: Path) -> list[dict]:
 
 
 def load_lr_sweep(sweep_dir: Path) -> list[dict]:
-    """Load LR sweep results (each subdir named lr_xxx)."""
+    """Load LR sweep results from subdirectories.
+
+    Reads the learning rate from each run's summary.json rather than
+    parsing directory names, so it works regardless of naming convention
+    (e.g. ``lr_3e-3``, ``tiny_lr_3e-3``, or arbitrary names).
+    """
     results = []
     if not sweep_dir.exists():
         print(f"  [WARN] {sweep_dir} does not exist")
@@ -56,10 +61,15 @@ def load_lr_sweep(sweep_dir: Path) -> list[dict]:
             continue
         with open(summary_path) as f:
             summary = json.load(f)
-        # Extract LR from directory name (lr_3e-3 → 3e-3)
-        lr_str = run_dir.name.replace("lr_", "")
-        summary["lr_str"] = lr_str
-        summary["lr_val"] = float(lr_str)
+        # Read LR from the saved config (authoritative source)
+        try:
+            lr_val = float(summary["config"]["training"]["learning_rate"])
+        except (KeyError, TypeError, ValueError):
+            print(f"  [WARN] {run_dir.name}: could not read LR from summary.json (skipped)")
+            continue
+        summary["lr_str"] = f"{lr_val:.0e}"
+        summary["lr_val"] = lr_val
+        summary["run_name"] = run_dir.name
         results.append(summary)
     return sorted(results, key=lambda x: x["lr_val"])
 
@@ -99,13 +109,13 @@ def fit_power_law(n_params: np.ndarray, losses: np.ndarray, label: str = "") -> 
 # --- Plot 1: µP LR Sweep ---
 
 def plot_mup_lr_sweep(sweep_results: list[dict], output_path: Path) -> None:
-    """Plot LR vs best_val_loss for µP sweep."""
+    """Plot LR vs final_val_loss for µP sweep."""
     if not sweep_results:
         print("  [SKIP] No µP LR sweep results")
         return
 
     lrs = [r["lr_val"] for r in sweep_results]
-    losses = [r["best_val_loss"] for r in sweep_results]
+    losses = [r["final_val_loss"] for r in sweep_results]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(lrs, losses, 'o-', color="C2", markersize=8, linewidth=2)
@@ -116,9 +126,51 @@ def plot_mup_lr_sweep(sweep_results: list[dict], output_path: Path) -> None:
 
     ax.set_xscale("log")
     ax.set_xlabel("Learning Rate")
-    ax.set_ylabel("Best Validation Loss")
+    ax.set_ylabel("Validation Loss (after 1 epoch)")
     ax.set_title("µP LR Sweep (Tiny Model)")
     ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {output_path}")
+
+
+# --- Plot 1b: Combined SP + µP LR Sweep ---
+
+def plot_combined_lr_sweep(
+    sp_sweep: list[dict],
+    mup_sweep: list[dict],
+    output_path: Path,
+) -> None:
+    """Overlay SP and µP LR sweep results on the same plot."""
+    if not sp_sweep and not mup_sweep:
+        print("  [SKIP] No LR sweep results for either parameterization")
+        return
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    for sweep, color, marker, label in [
+        (sp_sweep, "C0", "o", "SP"),
+        (mup_sweep, "C2", "s", "µP"),
+    ]:
+        if not sweep:
+            continue
+        lrs = [r["lr_val"] for r in sweep]
+        losses = [r["final_val_loss"] for r in sweep]
+        ax.plot(lrs, losses, f'{marker}-', color=color, markersize=8, linewidth=2, label=label)
+
+        best_idx = int(np.argmin(losses))
+        ax.scatter([lrs[best_idx]], [losses[best_idx]], s=150, color=color,
+                   edgecolors="red", linewidth=2, zorder=5,
+                   label=f"{label} best: LR={lrs[best_idx]:.0e}")
+
+    ax.set_xscale("log")
+    ax.set_xlabel("Learning Rate")
+    ax.set_ylabel("Validation Loss (after 1 epoch)")
+    ax.set_title("LR Sweep Comparison: SP vs µP (Tiny Model)")
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
@@ -147,7 +199,7 @@ def plot_sp_vs_mup_scaling(
             continue
         results_sorted = sorted(results, key=lambda x: x["n_params"])
         n = np.array([r["n_params"] for r in results_sorted])
-        l = np.array([r["best_val_loss"] for r in results_sorted])
+        l = np.array([r["final_val_loss"] for r in results_sorted])
         names = [r["run_name"] for r in results_sorted]
 
         ax.scatter(n, l, s=80, color=color, edgecolors="black", linewidth=0.5,
@@ -171,7 +223,7 @@ def plot_sp_vs_mup_scaling(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Parameters (N)")
-    ax.set_ylabel("Best Validation Loss")
+    ax.set_ylabel("Validation Loss (after 1 epoch)")
     ax.set_title("SP vs µP Scaling Laws for SVG Language Model")
     ax.legend(fontsize=8, loc="upper right")
     ax.grid(True, alpha=0.3, which="both")
@@ -202,7 +254,7 @@ def plot_lr_transfer(
     ]:
         results_sorted = sorted(results, key=lambda x: x["n_params"])
         n = [r["n_params"] for r in results_sorted]
-        l = [r["best_val_loss"] for r in results_sorted]
+        l = [r["final_val_loss"] for r in results_sorted]
         names = [r["run_name"] for r in results_sorted]
         ax.plot(n, l, 'o-', color=color, markersize=8, linewidth=2, label=label)
         for ni, li, name in zip(n, l, names):
@@ -211,7 +263,7 @@ def plot_lr_transfer(
 
     ax.set_xscale("log")
     ax.set_xlabel("Parameters (N)")
-    ax.set_ylabel("Best Validation Loss")
+    ax.set_ylabel("Validation Loss (after 1 epoch)")
     ax.set_title("LR Transfer: SP vs µP\n(Same base LR transferred across model sizes)")
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
@@ -240,10 +292,10 @@ def print_comparison(sp_results: list[dict], mup_results: list[dict]) -> None:
         sp = sp_lookup.get(name)
         mup = mup_lookup.get(name)
         params_str = f"{(sp or mup)['n_params']/1e6:.1f}M"
-        sp_loss = f"{sp['best_val_loss']:.4f}" if sp else "—"
-        mup_loss = f"{mup['best_val_loss']:.4f}" if mup else "—"
+        sp_loss = f"{sp['final_val_loss']:.4f}" if sp else "—"
+        mup_loss = f"{mup['final_val_loss']:.4f}" if mup else "—"
         if sp and mup:
-            delta = mup['best_val_loss'] - sp['best_val_loss']
+            delta = mup['final_val_loss'] - sp['final_val_loss']
             delta_str = f"{delta:+.4f}"
         else:
             delta_str = "—"
@@ -293,8 +345,9 @@ def extrapolate(fit: dict, target_factor: float = 10.0, largest_n: int = 88_100_
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze µP vs SP scaling results")
-    parser.add_argument("--sp-dir", type=str, default="results/runs/scaling_study_colab")
+    parser.add_argument("--sp-dir", type=str, default="results/runs/scaling_study")
     parser.add_argument("--mup-dir", type=str, default="results/runs/mup_scaling_study")
+    parser.add_argument("--sp-sweep-dir", type=str, default="results/runs/lr_sweep")
     parser.add_argument("--mup-sweep-dir", type=str, default="results/runs/mup_lr_sweep")
     args = parser.parse_args()
 
@@ -305,29 +358,35 @@ def main():
     print("Loading results...")
     sp_results = load_results(Path(args.sp_dir))
     mup_results = load_results(Path(args.mup_dir))
+    sp_sweep = load_lr_sweep(Path(args.sp_sweep_dir))
     mup_sweep = load_lr_sweep(Path(args.mup_sweep_dir))
 
     print(f"  SP:       {len(sp_results)} models")
     print(f"  µP:       {len(mup_results)} models")
+    print(f"  SP sweep: {len(sp_sweep)} LRs")
     print(f"  µP sweep: {len(mup_sweep)} LRs")
 
-    # Plot 1: µP LR Sweep
+    # Plot 1a: µP LR Sweep (standalone)
     print("\n--- µP LR Sweep ---")
     plot_mup_lr_sweep(mup_sweep, plots_dir / "mup_lr_sweep.png")
+
+    # Plot 1b: Combined SP + µP LR Sweep
+    print("\n--- SP vs µP LR Sweep ---")
+    plot_combined_lr_sweep(sp_sweep, mup_sweep, plots_dir / "sp_vs_mup_lr_sweep.png")
 
     # Fit power laws
     sp_fit, mup_fit = None, None
 
     if len(sp_results) >= 3:
         sp_n = np.array([r["n_params"] for r in sp_results])
-        sp_l = np.array([r["best_val_loss"] for r in sp_results])
+        sp_l = np.array([r["final_val_loss"] for r in sp_results])
         sp_fit = fit_power_law(sp_n, sp_l, "SP")
         if sp_fit:
             print(f"\n  SP fit:  α={sp_fit['alpha']:.4f}, c={sp_fit['c']:.4f}, R²={sp_fit['r_squared']:.4f}")
 
     if len(mup_results) >= 3:
         mup_n = np.array([r["n_params"] for r in mup_results])
-        mup_l = np.array([r["best_val_loss"] for r in mup_results])
+        mup_l = np.array([r["final_val_loss"] for r in mup_results])
         mup_fit = fit_power_law(mup_n, mup_l, "µP")
         if mup_fit:
             print(f"  µP fit:  α={mup_fit['alpha']:.4f}, c={mup_fit['c']:.4f}, R²={mup_fit['r_squared']:.4f}")

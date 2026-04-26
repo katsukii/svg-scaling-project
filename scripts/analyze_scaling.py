@@ -34,15 +34,16 @@ def load_scaling_results(scaling_dir: Path) -> list[dict]:
 def print_summary_table(results: list[dict]) -> None:
     """Print a comparison table of scaling results."""
     print("\n=== Scaling Study Results ===\n")
-    print(f"{'Model':>8s}  {'Params':>10s}  {'Best Val Loss':>13s}  "
-          f"{'Final PPL':>10s}  {'Time':>10s}")
-    print("-" * 60)
+    print(f"{'Model':>8s}  {'Params':>10s}  {'Final Val Loss':>14s}  "
+          f"{'Best Val Loss':>13s}  {'Final PPL':>10s}  {'Time':>10s}")
+    print("-" * 75)
 
     for r in sorted(results, key=lambda x: x["n_params"]):
         name = r["run_name"]
         params_str = f"{r['n_params']/1e6:.1f}M"
         time_str = f"{r['total_time_s']/60:.1f}m"
-        print(f"{name:>8s}  {params_str:>10s}  {r['best_val_loss']:>13.4f}  "
+        print(f"{name:>8s}  {params_str:>10s}  {r['final_val_loss']:>14.4f}  "
+              f"{r['best_val_loss']:>13.4f}  "
               f"{r['final_val_ppl']:>10.2f}  {time_str:>10s}")
 
 
@@ -119,7 +120,7 @@ def plot_scaling_law(
     """Create log-log scaling plot with data points + fit curve."""
     results_sorted = sorted(results, key=lambda x: x["n_params"])
     n_params = np.array([r["n_params"] for r in results_sorted])
-    losses = np.array([r["best_val_loss"] for r in results_sorted])
+    losses = np.array([r["final_val_loss"] for r in results_sorted])
     names = [r["run_name"] for r in results_sorted]
 
     fig, ax = plt.subplots(figsize=(9, 6))
@@ -154,7 +155,7 @@ def plot_scaling_law(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Parameters (N)")
-    ax.set_ylabel("Best Validation Loss")
+    ax.set_ylabel("Validation Loss (after 1 epoch)")
     ax.set_title("Scaling Law: SVG Language Model")
     ax.grid(True, alpha=0.3, which="both")
 
@@ -181,9 +182,9 @@ def main():
 
     print_summary_table(results)
 
-    # Power law fit
+    # Power law fit (using final val loss = "after 1 epoch")
     n_params = np.array([r["n_params"] for r in results])
-    losses = np.array([r["best_val_loss"] for r in results])
+    losses = np.array([r["final_val_loss"] for r in results])
 
     fit_result = None
     if len(results) >= 2:

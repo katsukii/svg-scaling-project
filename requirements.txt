@@ -7,6 +7,5 @@ lxml
 cairosvg
 matplotlib
 scipy
-tqdm
-wandb
 Pillow
+pyyaml

@@ -24,7 +24,7 @@ from pathlib import Path
 
 import cairosvg
 from lxml import etree
-from datasets import load_from_disk
+from datasets import load_from_disk, load_dataset, concatenate_datasets, DatasetDict
 
 
 # SVG namespace
@@ -217,12 +217,67 @@ def print_stats(stats: dict, split_name: str) -> None:
     print(f"  Empty:          {stats.get('empty', 0)}")
 
 
+def download_and_save(dataset_name: str, save_dir: Path) -> Path:
+    """Download a HuggingFace dataset and save to disk.
+
+    Args:
+        dataset_name: HuggingFace dataset identifier (e.g. 'starvector/svg-icons-simple')
+        save_dir: directory to save the dataset
+
+    Returns:
+        Path to the saved dataset
+    """
+    print(f"Downloading {dataset_name} from HuggingFace...")
+    ds = load_dataset(dataset_name)
+    save_path = save_dir / dataset_name.replace('/', '_')
+    save_path.mkdir(parents=True, exist_ok=True)
+    ds.save_to_disk(str(save_path))
+    print(f"Saved to {save_path}")
+    return save_path
+
+
+def ensure_splits(
+    ds,
+    train_frac: float = 0.98,
+    seed: int = 42,
+) -> DatasetDict:
+    """Create 98%/1%/1% train/val/test splits by file.
+
+    Always combines all existing splits into one pool first, then
+    re-splits to the target ratio.  This guarantees the recommended
+    98/1/1 proportion regardless of how the upstream dataset was
+    partitioned.  Splitting by file (not by token position within
+    concatenated text) avoids data leakage.
+    """
+    # Combine all splits into a single pool
+    if isinstance(ds, DatasetDict):
+        all_data = concatenate_datasets([ds[s] for s in ds])
+        print(f"Combined {len(ds)} splits → {len(all_data)} total examples")
+    else:
+        all_data = ds
+
+    val_test_frac = 1.0 - train_frac
+    train_rest = all_data.train_test_split(test_size=val_test_frac, seed=seed)
+    val_test = train_rest['test'].train_test_split(test_size=0.5, seed=seed)
+
+    result = DatasetDict({
+        'train': train_rest['train'],
+        'val': val_test['train'],
+        'test': val_test['test'],
+    })
+    print(f"Split by file (98/1/1): train={len(result['train'])}, "
+          f"val={len(result['val'])}, test={len(result['test'])}")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description='Preprocess SVG dataset')
     parser.add_argument('--input-dir', type=str, default='data/raw/svg-icons-simple',
                         help='Path to HuggingFace dataset on disk')
     parser.add_argument('--output-dir', type=str, default='data/processed',
                         help='Output directory for cleaned data')
+    parser.add_argument('--download', type=str, default=None,
+                        help='Download dataset from HuggingFace (e.g. starvector/svg-icons-simple)')
     parser.add_argument('--min-len', type=int, default=50,
                         help='Min character length filter (default: 50)')
     parser.add_argument('--max-len', type=int, default=None,
@@ -237,8 +292,15 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Download if requested
+    if args.download:
+        input_dir = download_and_save(args.download, input_dir.parent)
+
     print(f"Loading dataset from {input_dir}...")
     ds = load_from_disk(str(input_dir))
+
+    # Ensure train/val/test splits exist (auto-split 98/1/1 if needed)
+    ds = ensure_splits(ds)
 
     normalize_coords = not args.no_coord_norm
     check_render = not args.no_render_check

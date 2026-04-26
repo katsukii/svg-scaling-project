@@ -22,7 +22,10 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from mup import MuReadout
+try:
+    from mup import MuReadout
+except ImportError:
+    MuReadout = None
 
 
 @dataclass
@@ -143,6 +146,8 @@ class GPT(nn.Module):
         # Output head: MuReadout for µP (handles logit scaling automatically),
         # nn.Linear for standard parameterization
         if config.mup:
+            if MuReadout is None:
+                raise ImportError("mup package is required for µP mode: pip install mup")
             self.lm_head = MuReadout(config.n_embd, config.vocab_size, bias=False)
             # No weight tying under µP — embedding and readout have different
             # scaling requirements (readout needs 1/width_mult output scaling)
@@ -166,7 +171,8 @@ class GPT(nn.Module):
         return n_params
 
     def _init_weights(self, module: nn.Module) -> None:
-        if isinstance(module, (nn.Linear, MuReadout)):
+        _linear_types = (nn.Linear,) if MuReadout is None else (nn.Linear, MuReadout)
+        if isinstance(module, _linear_types):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)

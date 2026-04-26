@@ -175,6 +175,26 @@ def get_lr(
     return min_lr + 0.5 * (max_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
 
 
+def get_lr_factor(
+    step: int,
+    warmup_steps: int,
+    max_steps: int,
+    min_lr_frac: float,
+) -> float:
+    """Compute LR as a fraction of peak LR (0..1 range).
+
+    Used for µP: MuAdamW stores per-group width-scaled LRs at init time,
+    so the scheduler must multiply by a *relative* factor rather than
+    overwriting with an absolute value.
+    """
+    if step < warmup_steps:
+        return (step + 1) / warmup_steps
+    if step >= max_steps:
+        return min_lr_frac
+    progress = (step - warmup_steps) / (max_steps - warmup_steps)
+    return min_lr_frac + 0.5 * (1.0 - min_lr_frac) * (1.0 + math.cos(math.pi * progress))
+
+
 def setup_mup(model: GPT, config: ModelConfig, device: torch.device) -> None:
     """Set up µP base shapes on the model.
 
@@ -313,6 +333,10 @@ def main():
         optimizer = MuAdamW(optim_groups,
                             lr=train_cfg['learning_rate'],
                             betas=tuple(train_cfg['betas']))
+        # Save initial per-group LRs so the scheduler can scale relatively.
+        # MuAdamW sets width-dependent LRs; absolute overwrites would erase them.
+        for pg in optimizer.param_groups:
+            pg['initial_lr'] = pg['lr']
     else:
         optimizer = model.configure_optimizers(
             weight_decay=train_cfg['weight_decay'],
@@ -409,9 +433,17 @@ def main():
         step_start = time.time()
 
         # Update learning rate
-        lr = get_lr(step, warmup_steps, max_steps, max_lr, min_lr)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+        if args.mup:
+            # µP: scale each group's width-dependent LR by a relative factor
+            factor = get_lr_factor(step, warmup_steps, max_steps,
+                                   train_cfg['min_lr_frac'])
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = param_group['initial_lr'] * factor
+            lr = max_lr * factor  # for logging
+        else:
+            lr = get_lr(step, warmup_steps, max_steps, max_lr, min_lr)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
 
         # Forward + backward with gradient accumulation.
         # Clamp micro-steps to remaining batches in epoch so that
