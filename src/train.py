@@ -361,15 +361,18 @@ def main():
 
     # Resume from checkpoint
     start_step = 0
+    resume_tokens_seen = 0
     if args.resume:
         print(f"Resuming from {args.resume}...")
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
         start_step = ckpt['step'] + 1
+        resume_tokens_seen = ckpt.get('total_tokens_seen', 0)
         if 'train_iter' in ckpt:
             train_iter.load_state_dict(ckpt['train_iter'])
-            print(f"  Resumed at step {start_step} (iterator state restored)")
+            print(f"  Resumed at step {start_step}, tokens_seen={resume_tokens_seen:,} "
+                  f"(iterator state restored)")
         else:
             # Legacy checkpoint without iterator state: fast-forward
             # the iterator so it doesn't replay the same data order.
@@ -395,6 +398,7 @@ def main():
     t0 = time.time()
     throughput_samples = []  # for averaging
     peak_gpu_mem_mb = 0.0
+    total_tokens_seen = resume_tokens_seen  # exact cumulative count
 
     # Reset GPU memory stats
     if device.type == 'cuda':
@@ -415,12 +419,15 @@ def main():
         actual_accum = min(grad_accum_steps, max(1, train_iter.remaining_in_epoch))
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
+        step_tokens = 0
         for micro_step in range(actual_accum):
             x, y = train_iter.get_batch()
+            step_tokens += x.shape[0] * block_size
             _, loss = model(x, y)
             loss = loss / actual_accum  # scale for accumulation
             loss.backward()
             accum_loss += loss.item()
+        total_tokens_seen += step_tokens
 
         # Gradient clipping
         if train_cfg['grad_clip'] > 0:
@@ -430,7 +437,7 @@ def main():
 
         # Track throughput and GPU memory
         step_time = time.time() - step_start
-        tokens_per_sec = effective_batch_tokens / step_time
+        tokens_per_sec = step_tokens / step_time
         throughput_samples.append(tokens_per_sec)
 
         if device.type == 'cuda':
@@ -441,17 +448,16 @@ def main():
         # Logging
         if step % train_cfg['log_interval'] == 0:
             dt = time.time() - t0
-            tokens_seen = (step + 1) * effective_batch_tokens
             gpu_str = f" | gpu_mem {peak_gpu_mem_mb:.0f}MB" if device.type == 'cuda' else ""
             print(f"step {step:6d}/{max_steps} | loss {accum_loss:.4f} | "
-                  f"lr {lr:.2e} | {dt:.1f}s | {tokens_seen:,} tok | "
+                  f"lr {lr:.2e} | {dt:.1f}s | {total_tokens_seen:,} tok | "
                   f"{tokens_per_sec:.0f} tok/s{gpu_str}")
             log_entry = {
                 'step': step,
                 'train_loss': accum_loss,
                 'lr': lr,
                 'time': dt,
-                'tokens_seen': tokens_seen,
+                'tokens_seen': total_tokens_seen,
                 'tokens_per_sec': tokens_per_sec,
             }
             if device.type == 'cuda':
@@ -484,6 +490,7 @@ def main():
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'train_iter': train_iter.state_dict(),
+                'total_tokens_seen': total_tokens_seen,
                 'config': cfg,
             }, output_dir / f'checkpoint_{step}.pt')
 
@@ -523,6 +530,7 @@ def main():
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
         'train_iter': train_iter.state_dict(),
+        'total_tokens_seen': total_tokens_seen,
         'config': cfg,
     }, output_dir / 'final_checkpoint.pt')
 
@@ -541,6 +549,7 @@ def main():
         'mup': args.mup,
         'mup_base_width': args.mup_base_width if args.mup else None,
         'width_mult': mc.n_embd / mc.mup_base_width if args.mup else None,
+        'total_tokens_seen': total_tokens_seen,
         'effective_batch_tokens': effective_batch_tokens,
         'grad_accum_steps': grad_accum_steps,
         'steps_per_epoch': steps_per_epoch,
