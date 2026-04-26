@@ -61,10 +61,10 @@ python src/tokenize_data.py \
     --input-dir data/processed \
     --output-dir data/tokenized \
     --vocab-size 4096 \
-    --max-token-len 2048
+    --max-token-len 0
 ```
 
-Sequences exceeding the maximum token length are filtered out.
+With `--max-token-len 0` (no filter), all sequences are kept regardless of length. The training loop's `block_size` (1024) handles sequence windowing. Set a positive value (e.g., 2048) to filter long sequences if needed.
 
 ## Training
 
