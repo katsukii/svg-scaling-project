@@ -95,12 +95,17 @@ def main():
     parser.add_argument('--max-steps', type=int, default=None, help='Override max steps')
     parser.add_argument('--output-dir', type=str, default=None, help='Override output directory')
     parser.add_argument('--device', type=str, default=None, help='Device (cpu/cuda/mps)')
+    parser.add_argument('--learning-rate', type=float, default=None,
+                        help='Override learning rate from config')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     model_cfg = cfg['model']
     train_cfg = cfg['training']
     data_cfg = cfg['data']
+
+    if args.learning_rate is not None:
+        train_cfg['learning_rate'] = args.learning_rate
 
     # Resolve paths relative to the config file's parent directory
     config_dir = Path(args.config).resolve().parent.parent
