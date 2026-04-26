@@ -69,6 +69,14 @@ class EpochIterator:
         """Number of batches per epoch (including final partial batch)."""
         return math.ceil(self.n_windows / self.batch_size)
 
+    @property
+    def remaining_in_epoch(self) -> int:
+        """Number of batches left in the current epoch."""
+        remaining_windows = len(self.perm) - self.cursor
+        if remaining_windows <= 0:
+            return 0
+        return math.ceil(remaining_windows / self.batch_size)
+
     def get_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the next batch. Includes partial batches at epoch end.
 
@@ -324,8 +332,10 @@ def main():
 
     # Compute training steps (optimizer steps, not micro-batches)
     # batches_per_epoch includes the final partial batch (ceil division),
-    # so every window is consumed.  steps_per_epoch uses ceil again to
-    # ensure the last accumulation group is not silently dropped.
+    # so every window is consumed.  The training loop respects epoch
+    # boundaries: it never pulls batches from the next epoch into the
+    # current optimizer step's accumulation.  Each optimizer step uses
+    # min(grad_accum_steps, remaining_in_epoch) micro-batches.
     batches_per_epoch = train_iter.batches_per_epoch
     steps_per_epoch = math.ceil(batches_per_epoch / grad_accum_steps)
 
@@ -399,13 +409,16 @@ def main():
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-        # Forward + backward with gradient accumulation
+        # Forward + backward with gradient accumulation.
+        # Clamp micro-steps to remaining batches in epoch so that
+        # accumulation never crosses an epoch boundary.
+        actual_accum = min(grad_accum_steps, max(1, train_iter.remaining_in_epoch))
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
-        for micro_step in range(grad_accum_steps):
+        for micro_step in range(actual_accum):
             x, y = train_iter.get_batch()
             _, loss = model(x, y)
-            loss = loss / grad_accum_steps  # scale for accumulation
+            loss = loss / actual_accum  # scale for accumulation
             loss.backward()
             accum_loss += loss.item()
 
@@ -500,9 +513,13 @@ def main():
         print(f"  Peak GPU memory: {peak_gpu_mem_mb:.0f} MB")
 
     # Save final model + logs
+    # The last completed step index is max_steps - 1 (loop runs
+    # range(start_step, max_steps)).  Storing the actual last step
+    # ensures resume with start_step = ckpt['step'] + 1 is correct.
+    last_step = max_steps - 1
     torch.save(model.state_dict(), output_dir / 'final_model.pt')
     torch.save({
-        'step': max_steps,
+        'step': last_step,
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
         'train_iter': train_iter.state_dict(),
