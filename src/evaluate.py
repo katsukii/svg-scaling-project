@@ -183,12 +183,98 @@ def check_structural_validity(svg_text: str) -> dict:
     return checks
 
 
+def _evaluate_single(file_path: Path, samples_dir: Path, is_complete: bool) -> dict:
+    """Evaluate a single sample file and return per-sample metrics."""
+    rel_path = str(file_path.relative_to(samples_dir))
+    if not is_complete:
+        return {
+            'file': file_path.name,
+            'relative_path': rel_path,
+            'length': file_path.stat().st_size,
+            'complete': False,
+            'xml_valid': False,
+            'renders': False,
+            'has_svg_root': False,
+            'properly_closed': False,
+            'valid_viewbox': False,
+            'valid_attributes': False,
+        }
+
+    svg_text = file_path.read_text(encoding='utf-8')
+    sample: dict = {
+        'file': file_path.name,
+        'relative_path': rel_path,
+        'length': len(svg_text),
+        'complete': True,
+    }
+    sample['xml_valid'] = check_xml_validity(svg_text)
+    sample['renders'] = check_svg_render(svg_text)
+    structural = check_structural_validity(svg_text)
+    sample.update(structural)
+    return sample
+
+
+def _aggregate(per_sample: list[dict]) -> dict:
+    """Compute aggregate metrics from a list of per-sample dicts.
+
+    Output schema matches v1 eval_metrics.json['samples'] so that
+    v1/v2 results can be compared mechanically.
+    """
+    total = len(per_sample)
+    if total == 0:
+        return {}
+    complete = sum(1 for s in per_sample if s['complete'])
+    xml_valid = sum(1 for s in per_sample if s['xml_valid'])
+    render_ok = sum(1 for s in per_sample if s['renders'])
+    has_svg_root = sum(1 for s in per_sample if s.get('has_svg_root'))
+    valid_viewbox = sum(1 for s in per_sample if s.get('valid_viewbox'))
+    valid_attributes = sum(1 for s in per_sample if s.get('valid_attributes'))
+    structural = sum(1 for s in per_sample
+                     if s.get('has_svg_root') and s.get('properly_closed')
+                     and s.get('valid_attributes'))
+    return {
+        'total_samples': total,
+        'complete_samples': complete,
+        'incomplete_samples': total - complete,
+        'xml_valid': xml_valid,
+        'render_success': render_ok,
+        'structural_valid': structural,
+        'has_svg_root': has_svg_root,
+        'valid_viewbox': valid_viewbox,
+        'valid_attributes': valid_attributes,
+        'completion_rate': complete / total,
+        'xml_validity_rate': xml_valid / total,
+        'render_rate': render_ok / total,
+        'structural_validity_rate': structural / total,
+    }
+
+
+def _categorize(rel_path: str) -> tuple[str, str]:
+    """Return (level1_category, level2_category) from relative path.
+
+    E.g. 'unconditional/topp_t0.8/sample_0.svg' -> ('unconditional', 'topp_t0.8')
+         'prefix_conditioned/face_partial/sample_0.svg' -> ('prefix_conditioned', 'face_partial')
+    """
+    parts = rel_path.replace('\\', '/').split('/')
+    level1 = parts[0] if len(parts) > 1 else 'root'
+    level2 = parts[1] if len(parts) > 2 else 'root'
+    return level1, level2
+
+
 def evaluate_samples(samples_dir: Path) -> dict:
     """Evaluate all generated outputs in a directory (recursively).
 
     Searches samples_dir and all subdirectories for complete SVGs (*.svg)
     and incomplete outputs (*_incomplete.txt) so that the denominator
     reflects the total number of generation attempts, not just successes.
+
+    Returns a dict with:
+      - aggregate_full: metrics over all samples
+      - aggregate_old_subset: metrics over unconditional/topp_* only
+        (closest v1 comparator — same sampling method and temperatures,
+         but excludes v1 prefix samples since prefix content changed)
+      - categories: per-category breakdowns (level1 and level2)
+      - per_sample: list of per-sample metrics with relative_path
     """
     svg_files = sorted(samples_dir.rglob('*.svg'))
     incomplete_files = sorted(samples_dir.rglob('*_incomplete.txt'))
@@ -198,70 +284,49 @@ def evaluate_samples(samples_dir: Path) -> dict:
         print(f"  [WARN] No samples found in {samples_dir}")
         return {}
 
-    results = {
-        'total_samples': total,
-        'complete_samples': len(svg_files),
-        'incomplete_samples': len(incomplete_files),
-        'xml_valid': 0,
-        'render_success': 0,
-        'structural_valid': 0,
-        'has_svg_root': 0,
-        'valid_viewbox': 0,
-        'valid_attributes': 0,
-        'per_sample': [],
-    }
-
-    # Evaluate complete SVGs
+    # Evaluate all samples
+    per_sample = []
     for svg_path in svg_files:
-        svg_text = svg_path.read_text(encoding='utf-8')
-        sample = {
-            'file': svg_path.name,
-            'length': len(svg_text),
-            'complete': True,
-        }
-
-        sample['xml_valid'] = check_xml_validity(svg_text)
-        if sample['xml_valid']:
-            results['xml_valid'] += 1
-
-        sample['renders'] = check_svg_render(svg_text)
-        if sample['renders']:
-            results['render_success'] += 1
-
-        structural = check_structural_validity(svg_text)
-        sample.update(structural)
-        if structural['has_svg_root'] and structural['properly_closed'] and structural['valid_attributes']:
-            results['structural_valid'] += 1
-        if structural['has_svg_root']:
-            results['has_svg_root'] += 1
-        if structural['valid_viewbox']:
-            results['valid_viewbox'] += 1
-        if structural['valid_attributes']:
-            results['valid_attributes'] += 1
-
-        results['per_sample'].append(sample)
-
-    # Record incomplete samples (all metrics fail by definition)
+        per_sample.append(_evaluate_single(svg_path, samples_dir, is_complete=True))
     for inc_path in incomplete_files:
-        results['per_sample'].append({
-            'file': inc_path.name,
-            'length': inc_path.stat().st_size,
-            'complete': False,
-            'xml_valid': False,
-            'renders': False,
-            'has_svg_root': False,
-            'properly_closed': False,
-            'valid_viewbox': False,
-            'valid_attributes': False,
-        })
+        per_sample.append(_evaluate_single(inc_path, samples_dir, is_complete=False))
 
-    # Rates use total (complete + incomplete) as denominator
-    results['completion_rate'] = len(svg_files) / total
-    results['xml_validity_rate'] = results['xml_valid'] / total
-    results['render_rate'] = results['render_success'] / total
-    results['structural_validity_rate'] = results['structural_valid'] / total
+    # Sort by relative_path for deterministic output
+    per_sample.sort(key=lambda s: s['relative_path'])
 
-    return results
+    # --- 3-tier aggregation ---
+
+    # 1) aggregate_full: all samples
+    aggregate_full = _aggregate(per_sample)
+
+    # 2) aggregate_old_subset: unconditional/topp_* only (30 samples)
+    #    Closest v1 comparator: same method (top-p 0.95) and temperatures.
+    #    Excludes v1 prefix samples (prefix content changed between v1/v2).
+    old_subset = [s for s in per_sample
+                  if s['relative_path'].startswith('unconditional/topp_')]
+    aggregate_old_subset = _aggregate(old_subset)
+
+    # 3) categories: per-directory breakdown
+    from collections import defaultdict
+    by_level1: dict[str, list[dict]] = defaultdict(list)
+    by_level2: dict[str, list[dict]] = defaultdict(list)
+    for s in per_sample:
+        l1, l2 = _categorize(s['relative_path'])
+        by_level1[l1].append(s)
+        by_level2[f"{l1}/{l2}"].append(s)
+
+    categories = {}
+    for key, samples in sorted(by_level1.items()):
+        categories[key] = _aggregate(samples)
+    for key, samples in sorted(by_level2.items()):
+        categories[key] = _aggregate(samples)
+
+    return {
+        'aggregate_full': aggregate_full,
+        'aggregate_old_subset': aggregate_old_subset,
+        'categories': categories,
+        'per_sample': per_sample,
+    }
 
 
 def render_sample_grid(
@@ -363,16 +428,22 @@ def main():
     sample_metrics = evaluate_samples(samples_dir)
     if sample_metrics:
         all_metrics['samples'] = sample_metrics
-        n = sample_metrics['total_samples']
-        nc = sample_metrics['complete_samples']
-        print(f"  Total outputs: {n} ({nc} complete, {n - nc} incomplete)")
-        print(f"  Completion rate: {nc}/{n} ({sample_metrics['completion_rate']:.1%})")
-        print(f"  XML valid: {sample_metrics['xml_valid']}/{n} "
-              f"({sample_metrics['xml_validity_rate']:.1%})")
-        print(f"  Renders OK: {sample_metrics['render_success']}/{n} "
-              f"({sample_metrics['render_rate']:.1%})")
-        print(f"  Structural valid: {sample_metrics['structural_valid']}/{n} "
-              f"({sample_metrics['structural_validity_rate']:.1%})")
+
+        def _print_agg(label: str, agg: dict) -> None:
+            if not agg:
+                return
+            n = agg['total_samples']
+            nc = agg['complete_samples']
+            print(f"\n  [{label}] ({n} samples)")
+            print(f"    Completion:  {nc}/{n} ({agg['completion_rate']:.1%})")
+            print(f"    XML valid:   {agg['xml_valid']}/{n} ({agg['xml_validity_rate']:.1%})")
+            print(f"    Renders OK:  {agg['render_success']}/{n} ({agg['render_rate']:.1%})")
+            print(f"    Structural:  {agg['structural_valid']}/{n} ({agg['structural_validity_rate']:.1%})")
+
+        _print_agg('ALL', sample_metrics['aggregate_full'])
+        _print_agg('OLD SUBSET (uncond top-p)', sample_metrics['aggregate_old_subset'])
+        for cat_key, cat_agg in sorted(sample_metrics.get('categories', {}).items()):
+            _print_agg(cat_key, cat_agg)
 
     # 3. Render grid
     print("\nRendering sample grid...")

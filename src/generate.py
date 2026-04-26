@@ -123,7 +123,7 @@ def main():
                         help='Tokenizer path')
     parser.add_argument('--num-samples', type=int, default=5)
     parser.add_argument('--prefix', type=str, default='<svg')
-    parser.add_argument('--max-tokens', type=int, default=512)
+    parser.add_argument('--max-tokens', type=int, default=4096)
     parser.add_argument('--temperature', type=float, default=0.8)
     parser.add_argument('--top-k', type=int, default=50,
                         help='Top-k sampling (0 to disable)')
