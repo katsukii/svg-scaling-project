@@ -27,19 +27,74 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+class EpochIterator:
+    """Sequential, shuffled-window iterator for true epoch training.
+
+    Divides the data into non-overlapping windows of size block_size+1,
+    shuffles them, and yields batches without replacement. One full pass
+    through all windows = one epoch.
+    """
+
+    def __init__(
+        self,
+        data: np.ndarray,
+        batch_size: int,
+        block_size: int,
+        device: torch.device,
+        seed: int = 42,
+    ):
+        self.data = data
+        self.batch_size = batch_size
+        self.block_size = block_size
+        self.device = device
+
+        # Non-overlapping window start positions (each window is block_size+1 tokens)
+        window_size = block_size + 1
+        n_windows = len(data) // window_size
+        self.all_starts = np.arange(n_windows) * window_size
+        self.rng = np.random.RandomState(seed)
+        self._shuffle()
+
+    def _shuffle(self) -> None:
+        """Shuffle window order for a new epoch."""
+        self.perm = self.rng.permutation(len(self.all_starts))
+        self.cursor = 0
+
+    @property
+    def steps_per_epoch(self) -> int:
+        """Number of batches (not optimizer steps) per epoch."""
+        return len(self.all_starts) // self.batch_size
+
+    def get_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the next batch, reshuffling if the epoch is exhausted."""
+        if self.cursor + self.batch_size > len(self.perm):
+            self._shuffle()
+
+        idx = self.perm[self.cursor:self.cursor + self.batch_size]
+        self.cursor += self.batch_size
+
+        starts = self.all_starts[idx]
+        bs = self.block_size
+        x = torch.stack([
+            torch.from_numpy(self.data[s:s + bs].astype(np.int64))
+            for s in starts
+        ])
+        y = torch.stack([
+            torch.from_numpy(self.data[s + 1:s + 1 + bs].astype(np.int64))
+            for s in starts
+        ])
+        return x.to(self.device), y.to(self.device)
+
+
 def get_batch(
     data: np.ndarray,
     batch_size: int,
     block_size: int,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample a random batch of sequences from the data.
+    """Sample a random batch (used for evaluation only).
 
-    The data is a flat array of token IDs. We pick random starting
-    positions and extract sequences of length block_size.
-
-    Returns:
-        (x, y) where x is input and y is target (shifted by 1)
+    For training, use EpochIterator instead to ensure true epoch semantics.
     """
     max_start = len(data) - block_size - 1
     ix = torch.randint(max_start, (batch_size,))
@@ -242,19 +297,28 @@ def main():
     grad_accum_steps = train_cfg.get('grad_accum_steps', 1)
     effective_batch_tokens = batch_size * block_size * grad_accum_steps
 
+    # Create epoch iterator for sequential, without-replacement training
+    train_iter = EpochIterator(train_data, batch_size, block_size, device)
+
     # Compute training steps (optimizer steps, not micro-batches)
+    # steps_per_epoch is based on non-overlapping windows, so 1 epoch =
+    # every token seen exactly once (no gaps, no repeats).
+    batches_per_epoch = train_iter.steps_per_epoch
+    steps_per_epoch = batches_per_epoch // grad_accum_steps
+
     if args.max_steps:
         max_steps = args.max_steps
     elif train_cfg.get('max_steps'):
         max_steps = train_cfg['max_steps']
     else:
-        # 1 epoch = process all training tokens once
-        max_steps = len(train_data) // effective_batch_tokens
+        # 1 epoch = every non-overlapping window seen once
+        max_steps = steps_per_epoch
 
     warmup_steps = int(max_steps * train_cfg['warmup_frac'])
     max_lr = train_cfg['learning_rate']
     min_lr = max_lr * train_cfg['min_lr_frac']
     print(f"Max steps: {max_steps}, Warmup steps: {warmup_steps}")
+    print(f"Steps per epoch: {steps_per_epoch} (batches_per_epoch={batches_per_epoch})")
     print(f"Batch size: {batch_size}, Block size: {block_size}, "
           f"Grad accum: {grad_accum_steps}")
     print(f"Effective tokens/step: {effective_batch_tokens:,}")
@@ -303,7 +367,7 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
         for micro_step in range(grad_accum_steps):
-            x, y = get_batch(train_data, batch_size, block_size, device)
+            x, y = train_iter.get_batch()
             _, loss = model(x, y)
             loss = loss / grad_accum_steps  # scale for accumulation
             loss.backward()
@@ -424,6 +488,7 @@ def main():
         'width_mult': mc.n_embd / mc.mup_base_width if args.mup else None,
         'effective_batch_tokens': effective_batch_tokens,
         'grad_accum_steps': grad_accum_steps,
+        'steps_per_epoch': steps_per_epoch,
         'avg_tokens_per_second': avg_throughput,
         'peak_gpu_memory_mb': peak_gpu_mem_mb if device.type == 'cuda' else None,
     }

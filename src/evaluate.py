@@ -9,13 +9,13 @@ Metrics:
   - Structural validity (correct <svg> root, closed tags, valid attributes)
 
 Usage:
-    python -m src.evaluate \
+    python src/evaluate.py \
         --config configs/xl.yaml \
-        --checkpoint results/runs/mup_scaling_study/xl/best_model.pt \
-        --samples-dir results/samples/xl_mup/ \
+        --checkpoint results/runs/mup_xl/best_model.pt \
+        --samples-dir results/samples/ \
         --test-data data/tokenized/test.bin \
         --output-dir results/evaluation/ \
-        --mup --mup-base-width 128
+        --mup
 """
 
 import argparse
@@ -83,11 +83,20 @@ def check_svg_render(svg_text: str) -> bool:
 
 
 def check_structural_validity(svg_text: str) -> dict:
-    """Check structural SVG validity."""
+    """Check structural SVG validity.
+
+    Checks:
+      - <svg> root element
+      - Properly closed tags (implied by lxml parse success)
+      - Valid viewBox format (4 numeric values)
+      - Valid numeric attribute values (no NaN, no garbled text in
+        attributes that should be numeric like x, y, width, height, r, etc.)
+    """
     checks = {
         'has_svg_root': False,
         'properly_closed': False,
         'valid_viewbox': False,
+        'valid_attributes': False,
     }
 
     try:
@@ -101,8 +110,40 @@ def check_structural_validity(svg_text: str) -> dict:
         # Check for viewBox attribute
         viewbox = root.get('viewBox') or root.get('viewbox')
         if viewbox:
-            parts = viewbox.strip().split()
-            checks['valid_viewbox'] = len(parts) == 4
+            parts = viewbox.strip().replace(',', ' ').split()
+            if len(parts) == 4:
+                try:
+                    [float(p) for p in parts]
+                    checks['valid_viewbox'] = True
+                except ValueError:
+                    pass
+
+        # Check numeric attributes across all elements
+        numeric_attrs = {
+            'x', 'y', 'cx', 'cy', 'r', 'rx', 'ry',
+            'width', 'height', 'x1', 'y1', 'x2', 'y2',
+            'dx', 'dy', 'fx', 'fy', 'fr',
+            'stroke-width', 'stroke-dashoffset', 'opacity',
+            'fill-opacity', 'stroke-opacity', 'font-size',
+        }
+        attr_ok = True
+        for elem in root.iter():
+            for attr_name, attr_val in elem.attrib.items():
+                # Strip namespace prefix
+                local_name = attr_name.split('}')[1] if '}' in attr_name else attr_name
+                if local_name in numeric_attrs:
+                    # Allow percentage (e.g. "50%"), units (e.g. "10px")
+                    val = attr_val.strip().rstrip('%').rstrip('pxemin')
+                    if val:
+                        try:
+                            float(val)
+                        except ValueError:
+                            attr_ok = False
+                            break
+            if not attr_ok:
+                break
+        checks['valid_attributes'] = attr_ok
+
     except (etree.XMLSyntaxError, ValueError):
         pass
 
@@ -110,27 +151,40 @@ def check_structural_validity(svg_text: str) -> dict:
 
 
 def evaluate_samples(samples_dir: Path) -> dict:
-    """Evaluate all SVG files in a directory."""
+    """Evaluate all generated outputs in a directory.
+
+    Counts both complete SVGs (*.svg) and incomplete outputs
+    (*_incomplete.txt) so that the denominator reflects the total number
+    of generation attempts, not just successes.
+    """
     svg_files = sorted(samples_dir.glob('*.svg'))
-    if not svg_files:
-        print(f"  [WARN] No .svg files found in {samples_dir}")
+    incomplete_files = sorted(samples_dir.glob('*_incomplete.txt'))
+    total = len(svg_files) + len(incomplete_files)
+
+    if total == 0:
+        print(f"  [WARN] No samples found in {samples_dir}")
         return {}
 
     results = {
-        'total_samples': len(svg_files),
+        'total_samples': total,
+        'complete_samples': len(svg_files),
+        'incomplete_samples': len(incomplete_files),
         'xml_valid': 0,
         'render_success': 0,
         'structural_valid': 0,
         'has_svg_root': 0,
         'valid_viewbox': 0,
+        'valid_attributes': 0,
         'per_sample': [],
     }
 
+    # Evaluate complete SVGs
     for svg_path in svg_files:
         svg_text = svg_path.read_text(encoding='utf-8')
         sample = {
             'file': svg_path.name,
             'length': len(svg_text),
+            'complete': True,
         }
 
         sample['xml_valid'] = check_xml_validity(svg_text)
@@ -143,19 +197,36 @@ def evaluate_samples(samples_dir: Path) -> dict:
 
         structural = check_structural_validity(svg_text)
         sample.update(structural)
-        if structural['has_svg_root'] and structural['properly_closed']:
+        if structural['has_svg_root'] and structural['properly_closed'] and structural['valid_attributes']:
             results['structural_valid'] += 1
         if structural['has_svg_root']:
             results['has_svg_root'] += 1
         if structural['valid_viewbox']:
             results['valid_viewbox'] += 1
+        if structural['valid_attributes']:
+            results['valid_attributes'] += 1
 
         results['per_sample'].append(sample)
 
-    n = results['total_samples']
-    results['xml_validity_rate'] = results['xml_valid'] / n
-    results['render_rate'] = results['render_success'] / n
-    results['structural_validity_rate'] = results['structural_valid'] / n
+    # Record incomplete samples (all metrics fail by definition)
+    for inc_path in incomplete_files:
+        results['per_sample'].append({
+            'file': inc_path.name,
+            'length': inc_path.stat().st_size,
+            'complete': False,
+            'xml_valid': False,
+            'renders': False,
+            'has_svg_root': False,
+            'properly_closed': False,
+            'valid_viewbox': False,
+            'valid_attributes': False,
+        })
+
+    # Rates use total (complete + incomplete) as denominator
+    results['completion_rate'] = len(svg_files) / total
+    results['xml_validity_rate'] = results['xml_valid'] / total
+    results['render_rate'] = results['render_success'] / total
+    results['structural_validity_rate'] = results['structural_valid'] / total
 
     return results
 
@@ -263,7 +334,9 @@ def main():
     if sample_metrics:
         all_metrics['samples'] = sample_metrics
         n = sample_metrics['total_samples']
-        print(f"  Total samples: {n}")
+        nc = sample_metrics['complete_samples']
+        print(f"  Total outputs: {n} ({nc} complete, {n - nc} incomplete)")
+        print(f"  Completion rate: {nc}/{n} ({sample_metrics['completion_rate']:.1%})")
         print(f"  XML valid: {sample_metrics['xml_valid']}/{n} "
               f"({sample_metrics['xml_validity_rate']:.1%})")
         print(f"  Renders OK: {sample_metrics['render_success']}/{n} "

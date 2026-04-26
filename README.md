@@ -27,7 +27,7 @@ pip install -r requirements.txt
 Download and clean SVG data from HuggingFace (`nicholasKluge/svg-icons-simple`):
 
 ```bash
-python -m src.preprocess \
+python src/preprocess.py \
     --input-dir data/raw/svg-icons-simple \
     --output-dir data/processed \
     --min-len 50
@@ -47,7 +47,7 @@ This pipeline:
 Train a BPE tokenizer and convert to binary format:
 
 ```bash
-python -m src.tokenize_data \
+python src/tokenize_data.py \
     --input-dir data/processed \
     --output-dir data/tokenized \
     --vocab-size 4096 \
@@ -75,8 +75,14 @@ All models use the same effective token batch size (16,384 tokens/step). The XL 
 ### Standard Parameterization (SP)
 
 ```bash
-python -m src.train --config configs/tiny.yaml --run-name tiny
-python -m src.train --config configs/xl.yaml --run-name xl
+python src/train.py --config configs/tiny.yaml
+python src/train.py --config configs/xl.yaml
+```
+
+Results are saved to `results/runs/{config_name}_{timestamp}/`. To specify a custom output directory:
+
+```bash
+python src/train.py --config configs/tiny.yaml --output-dir results/runs/sp/tiny
 ```
 
 ### muP (Maximal Update Parameterization)
@@ -84,14 +90,18 @@ python -m src.train --config configs/xl.yaml --run-name xl
 Uses the [mup](https://github.com/microsoft/mup) package for width-independent hyperparameter transfer:
 
 ```bash
-python -m src.train --config configs/tiny.yaml --run-name tiny --mup
-python -m src.train --config configs/xl.yaml --run-name xl --mup
+python src/train.py --config configs/tiny.yaml --mup
+python src/train.py --config configs/xl.yaml --mup
 ```
 
 ### Resume Training
 
+Resume from a checkpoint (required for Part 4 additional epoch training):
+
 ```bash
-python -m src.train --config configs/xl.yaml --run-name xl --mup --resume
+python src/train.py --config configs/xl.yaml --mup \
+    --resume results/runs/mup_xl/final_checkpoint.pt \
+    --max-steps 12000
 ```
 
 ## Generation
@@ -100,38 +110,42 @@ Generate SVG samples from a trained checkpoint:
 
 ```bash
 # Unconditional generation
-python -m src.generate \
+python src/generate.py \
     --config configs/xl.yaml \
-    --checkpoint results/runs/mup_scaling_study/xl/best_model.pt \
+    --checkpoint results/runs/mup_xl/best_model.pt \
     --mup \
     --num-samples 10 \
     --temperature 0.8 \
     --top-k 50 \
-    --top-p 0.95
+    --top-p 0.95 \
+    --output-dir results/samples/
 
 # Prefix-conditioned generation
-python -m src.generate \
+python src/generate.py \
     --config configs/xl.yaml \
-    --checkpoint results/runs/mup_scaling_study/xl/best_model.pt \
+    --checkpoint results/runs/mup_xl/best_model.pt \
     --mup \
     --prefix '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"' \
-    --temperature 0.8
+    --temperature 0.8 \
+    --output-dir results/samples/prefix/
 ```
+
+Complete SVGs are saved as `sample_N.svg`; incomplete outputs (missing `</svg>`) are saved as `sample_N_incomplete.txt`.
 
 ## Evaluation
 
-Run quantitative evaluation on generated samples:
+Run quantitative evaluation on generated samples. Both `.svg` and `_incomplete.txt` files count toward the denominator:
 
 ```bash
-python -m src.evaluate \
+python src/evaluate.py \
     --config configs/xl.yaml \
-    --checkpoint results/runs/mup_scaling_study/xl/best_model.pt \
+    --checkpoint results/runs/mup_xl/best_model.pt \
     --mup \
     --samples-dir results/samples/ \
     --test-data data/tokenized/test.bin
 ```
 
-Metrics: test perplexity, XML validity rate, SVG render rate, structural validity.
+Metrics: test perplexity, completion rate, XML validity rate, SVG render rate, structural validity (including attribute value checks).
 
 ## Analysis Scripts
 
@@ -175,7 +189,7 @@ svg-scaling-project/
 │   ├── preprocess.py     # SVG cleaning and filtering pipeline
 │   ├── tokenize_data.py  # BPE tokenization
 │   ├── model.py          # GPT model (SP and muP modes)
-│   ├── train.py          # Training loop with gradient accumulation
+│   ├── train.py          # Training loop with sequential epoch iteration
 │   ├── generate.py       # SVG generation with top-k/top-p sampling
 │   └── evaluate.py       # Quantitative evaluation
 ├── tokenizer/            # Trained BPE tokenizer files
@@ -189,16 +203,16 @@ The model architecture and training loop are adapted from [nanoGPT](https://gith
 
 **Borrowed from nanoGPT** (with modifications):
 - GPT class structure (CausalSelfAttention, MLP, Block)
-- Batch sampling from memory-mapped binary data
 - Cosine learning rate schedule with warmup
 
 **Modified or implemented from scratch:**
+- Sequential epoch iterator (shuffled non-overlapping windows, without replacement)
 - muP integration via the `mup` package (MuReadout, MuAdamW, base shape setup)
 - SVG-specific preprocessing pipeline (coordinate normalization, render validation)
 - BPE tokenizer training on SVG data
 - Gradient accumulation for uniform token batch sizes
 - Top-p (nucleus) sampling
-- Evaluation pipeline (XML validity, render rate, structural checks)
+- Evaluation pipeline (XML validity, render rate, structural/attribute checks)
 - All analysis and visualization scripts
 - Power law fitting with confidence intervals
 
