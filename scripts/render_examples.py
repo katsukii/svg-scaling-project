@@ -63,13 +63,17 @@ def render_svg(svg_text: str, size: int = 200) -> Image.Image | None:
 def create_grid(
     categories: dict[str, list[str]],
     samples_per_cat: int = 3,
-    cell_size: int = 200,
-    output_path: Path = Path('results/plots/dataset_examples.png'),
+    cell_size: int = 150,
+    output_path: Path = Path('report/figures/dataset_examples.png'),
+    dpi: int = 300,
 ) -> None:
-    """Create a grid of rendered SVG examples."""
+    """Create a 1-row × 9-column horizontal grid of rendered SVG examples.
+
+    Layout: [Simple (3 cells)] | [Medium (3 cells)] | [Complex (3 cells)]
+    Each group has a centered label above its cells.
+    """
     cat_names = ['simple', 'medium', 'complex']
-    images = []
-    labels = []
+    all_images: list[Image.Image] = []
 
     for cat in cat_names:
         svgs = categories[cat][:samples_per_cat * 3]  # try extra in case some fail
@@ -79,36 +83,49 @@ def create_grid(
                 break
             img = render_svg(svg, cell_size)
             if img is not None:
-                images.append(img)
-                labels.append(f"{cat} ({len(svg)} chars)")
+                all_images.append(img)
                 count += 1
         # Pad with blanks if needed
         while count < samples_per_cat:
-            images.append(Image.new('RGB', (cell_size, cell_size), (240, 240, 240)))
-            labels.append(f"{cat} (no render)")
+            all_images.append(Image.new('RGB', (cell_size, cell_size), (240, 240, 240)))
             count += 1
 
-    # Create grid: rows=categories, cols=samples_per_cat
-    grid_cols = samples_per_cat
-    grid_rows = len(cat_names)
-    margin = 30  # top margin for labels
-    grid_w = grid_cols * cell_size
-    grid_h = grid_rows * (cell_size + margin)
-    grid = Image.new('RGB', (grid_w, grid_h), (255, 255, 255))
-
     from PIL import ImageDraw
+
+    label_h = 22        # pixels for group label row at top
+    group_gap = 8       # pixels between groups (visual separator)
+    n_groups = len(cat_names)
+    total_width = samples_per_cat * n_groups * cell_size + (n_groups - 1) * group_gap
+    total_height = label_h + cell_size
+
+    grid = Image.new('RGB', (total_width, total_height), (255, 255, 255))
     draw = ImageDraw.Draw(grid)
 
-    for row_idx, cat in enumerate(cat_names):
-        y_offset = row_idx * (cell_size + margin)
-        draw.text((5, y_offset + 5), f"{cat.upper()}", fill='black')
-        for col_idx in range(samples_per_cat):
-            img_idx = row_idx * samples_per_cat + col_idx
-            grid.paste(images[img_idx], (col_idx * cell_size, y_offset + margin))
+    for g_idx, cat in enumerate(cat_names):
+        x_start = g_idx * (samples_per_cat * cell_size + group_gap)
+        group_w = samples_per_cat * cell_size
+
+        # Draw vertical separator before each group (except first)
+        if g_idx > 0:
+            sep_x = x_start - group_gap // 2
+            draw.line([(sep_x, 0), (sep_x, total_height)], fill=(160, 160, 160), width=1)
+
+        # Draw group label centered above the group cells
+        label = cat.capitalize()
+        try:
+            tw = draw.textlength(label)
+        except AttributeError:
+            tw = len(label) * 6  # rough estimate for older Pillow
+        draw.text((x_start + (group_w - tw) // 2, 3), label, fill='black')
+
+        # Paste cell images in the row below the label
+        for c_idx in range(samples_per_cat):
+            img = all_images[g_idx * samples_per_cat + c_idx]
+            grid.paste(img, (x_start + c_idx * cell_size, label_h))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    grid.save(str(output_path))
-    print(f"Saved: {output_path}")
+    grid.save(str(output_path), dpi=(dpi, dpi))
+    print(f"Saved: {output_path}  ({total_width}x{total_height} px, {dpi} dpi)")
     print(f"  Categories: " + ", ".join(
         f"{cat}={len(categories[cat])}" for cat in cat_names))
 
@@ -117,7 +134,7 @@ def main():
     parser = argparse.ArgumentParser(description='Render example SVGs from dataset')
     parser.add_argument('--input', type=str, default='data/processed/train.jsonl',
                         help='Path to train.jsonl')
-    parser.add_argument('--output', type=str, default='results/plots/dataset_examples.png',
+    parser.add_argument('--output', type=str, default='report/figures/dataset_examples.png',
                         help='Output path for grid image')
     parser.add_argument('--samples-per-cat', type=int, default=3,
                         help='Samples per complexity category')

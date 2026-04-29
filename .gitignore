@@ -48,6 +48,9 @@ Thumbs.db
 # Docs (assignment PDF etc.)
 docs/
 
+# Report (LaTeX build artifacts etc.)
+report/
+
 # Secrets
 .env
 *.key
