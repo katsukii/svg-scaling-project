@@ -1,0 +1,11 @@
+{
+  "split": "train",
+  "total_sequences": 92585,
+  "le_512": 18728,
+  "le_1024": 51529,
+  "le_2048": 79416,
+  "pct_le_512": 20.23,
+  "pct_le_1024": 55.66,
+  "pct_le_2048": 85.78,
+  "source": "data/processed/train.jsonl + tokenizer/bpe_svg.json (Day 6), computed via direct tokenization"
+}

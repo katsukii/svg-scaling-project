@@ -1,0 +1,52 @@
+{
+  "tiny": {
+    "total": 25,
+    "complete": 19,
+    "incomplete": 6,
+    "xml_valid": 12,
+    "render_success": 12,
+    "completion_rate": 0.76,
+    "xml_validity_rate": 0.48,
+    "render_rate": 0.48
+  },
+  "small": {
+    "total": 25,
+    "complete": 17,
+    "incomplete": 8,
+    "xml_valid": 13,
+    "render_success": 13,
+    "completion_rate": 0.68,
+    "xml_validity_rate": 0.52,
+    "render_rate": 0.52
+  },
+  "medium": {
+    "total": 25,
+    "complete": 24,
+    "incomplete": 1,
+    "xml_valid": 19,
+    "render_success": 19,
+    "completion_rate": 0.96,
+    "xml_validity_rate": 0.76,
+    "render_rate": 0.76
+  },
+  "large": {
+    "total": 25,
+    "complete": 15,
+    "incomplete": 10,
+    "xml_valid": 12,
+    "render_success": 12,
+    "completion_rate": 0.6,
+    "xml_validity_rate": 0.48,
+    "render_rate": 0.48
+  },
+  "xl": {
+    "total": 25,
+    "complete": 18,
+    "incomplete": 7,
+    "xml_valid": 9,
+    "render_success": 9,
+    "completion_rate": 0.72,
+    "xml_validity_rate": 0.36,
+    "render_rate": 0.36
+  }
+}

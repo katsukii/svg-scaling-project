@@ -1,0 +1,58 @@
+{
+  "prefix_decoding_condition": {
+    "strategy": "top-p",
+    "top_p": 0.95,
+    "top_k": 0,
+    "temperature": 0.8,
+    "source": "scripts/colab_eval_v2 (2).ipynb cell 3a847191: --top-k 0 --top-p 0.95 --temperature 0.8"
+  },
+  "prefix": {
+    "n": 15,
+    "complete": 13,
+    "xml_valid": 8,
+    "structural_valid": 8,
+    "render": 8,
+    "complete_pct": 86.67,
+    "xml_valid_pct": 53.33,
+    "structural_valid_pct": 53.33,
+    "render_pct": 53.33
+  },
+  "unconditional_matched": {
+    "matched_conditions": ["unconditional/topp_t0.8"],
+    "n": 10,
+    "complete": 6,
+    "xml_valid": 6,
+    "structural_valid": 6,
+    "render": 6,
+    "complete_pct": 60.0,
+    "xml_valid_pct": 60.0,
+    "structural_valid_pct": 60.0,
+    "render_pct": 60.0,
+    "note": "Matched on strategy=top-p and temperature=0.8. Prefix uses top_p=0.95; unconditional also uses top_p=0.95 (same --top-p flag in generation script)."
+  },
+  "unconditional_all": {
+    "n": 60,
+    "complete": 36,
+    "xml_valid": 36,
+    "structural_valid": 36,
+    "render": 36,
+    "complete_pct": 60.0,
+    "xml_valid_pct": 60.0,
+    "structural_valid_pct": 60.0,
+    "render_pct": 60.0
+  },
+  "delta_matched": {
+    "complete_pp": 26.67,
+    "xml_valid_pp": -6.67,
+    "structural_valid_pp": -6.67,
+    "render_pp": -6.67
+  },
+  "delta_all": {
+    "complete_pp": 26.67,
+    "xml_valid_pp": -6.67,
+    "structural_valid_pp": -6.67,
+    "render_pp": -6.67
+  },
+  "decision": "Case A: matched comparison confirms prefix advantage (+26.7pp completion). The matched unconditional subset (topp_t0.8, n=10) has identical rates to the full unconditional pool (60%), so the v7 +27pt figure was not a decoding-condition mixing artifact.",
+  "caveat": "Matched comparison uses n=10 unconditional vs n=15 prefix — small samples, no statistical test applied."
+}

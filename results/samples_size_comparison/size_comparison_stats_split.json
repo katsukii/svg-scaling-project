@@ -1,0 +1,82 @@
+{
+  "tiny": {
+    "unconditional": {
+      "n": 10,
+      "complete": 7,
+      "xml_valid": 7,
+      "structural_valid": 7,
+      "render": 7
+    },
+    "prefix": {
+      "n": 15,
+      "complete": 12,
+      "xml_valid": 5,
+      "structural_valid": 5,
+      "render": 5
+    }
+  },
+  "small": {
+    "unconditional": {
+      "n": 10,
+      "complete": 6,
+      "xml_valid": 6,
+      "structural_valid": 6,
+      "render": 6
+    },
+    "prefix": {
+      "n": 15,
+      "complete": 11,
+      "xml_valid": 7,
+      "structural_valid": 7,
+      "render": 7
+    }
+  },
+  "medium": {
+    "unconditional": {
+      "n": 10,
+      "complete": 9,
+      "xml_valid": 9,
+      "structural_valid": 9,
+      "render": 9
+    },
+    "prefix": {
+      "n": 15,
+      "complete": 15,
+      "xml_valid": 10,
+      "structural_valid": 10,
+      "render": 10
+    }
+  },
+  "large": {
+    "unconditional": {
+      "n": 10,
+      "complete": 6,
+      "xml_valid": 6,
+      "structural_valid": 6,
+      "render": 6
+    },
+    "prefix": {
+      "n": 15,
+      "complete": 9,
+      "xml_valid": 6,
+      "structural_valid": 6,
+      "render": 6
+    }
+  },
+  "xl": {
+    "unconditional": {
+      "n": 10,
+      "complete": 6,
+      "xml_valid": 6,
+      "structural_valid": 6,
+      "render": 6
+    },
+    "prefix": {
+      "n": 15,
+      "complete": 12,
+      "xml_valid": 3,
+      "structural_valid": 3,
+      "render": 3
+    }
+  }
+}
