@@ -16,6 +16,7 @@ results/checkpoints/
 results/logs/
 results/runs/
 results/samples/
+results/tmp*/
 src/results/
 
 # Python
