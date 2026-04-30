@@ -14,7 +14,7 @@ The project also compares **Standard Parameterization (SP)** with **Maximal Upda
 
 <img src="results/plots/xl_unconditional_samples.png" width="600" alt="Generated SVG samples">
 
-**Generated SVG samples** from the muP XL model (91.2M parameters). The model learns to produce valid, renderable SVG icons from a 107M-token corpus.
+**Generated SVG samples** from the muP XL model (88.1M parameters). The model learns to produce valid, renderable SVG icons from a 107M-token corpus.
 
 ## Setup
 
@@ -178,14 +178,26 @@ python scripts/analyze_mup.py
 # SP-only scaling analysis
 python scripts/analyze_scaling.py
 
+# LR sweep result analysis (summary table + plots)
+python scripts/analyze_lr_sweep.py
+
 # muP coordinate check (activation norm stability across widths)
 python scripts/coord_check.py
+
+# Training loss curves for all model sizes
+python scripts/plot_training_curves.py --run-dir results/runs/mup
 
 # Token sequence length histogram
 python scripts/plot_token_histogram.py
 
+# Prefix completion comparison grid across model sizes
+python scripts/plot_prefix_comparison.py
+
 # Dataset example renders (simple/medium/complex grid)
 python scripts/render_examples.py
+
+# Generate unconditional + prefix samples from each model size (Tiny→XL)
+python scripts/generate_size_comparison.py
 ```
 
 ## Repository Structure
@@ -193,29 +205,41 @@ python scripts/render_examples.py
 ```
 svg-scaling-project/
 ├── configs/              # Model size configurations (tiny through xl)
-├── data/                 # Raw and processed data (gitignored)
-├── docs/                 # Project specification
-├── report/               # Final PDF report
+├── docs/                 # Project specification and GitHub Pages site
+│   ├── assets/           # Images for project page
+│   ├── index.html        # GitHub Pages project page
+│   └── report.pdf        # Final report PDF (served via Pages)
 ├── results/
+│   ├── evaluation_v2/    # Extended evaluation (metrics, grids)
 │   ├── plots/            # Generated analysis plots
-│   ├── runs/             # Training results per model (gitignored)
-│   └── samples/          # Generated SVG samples (gitignored)
+│   ├── prefixes_v2/      # Prefix SVG templates for conditioned generation
+│   ├── samples_v2/       # Samples across temperature/sampling settings
+│   └── samples_size_comparison/ # Cross-size generation comparison
 ├── scripts/              # Analysis, visualization, and experiment scripts
-│   ├── analyze_mup.py    # SP vs muP scaling comparison
-│   ├── analyze_scaling.py# SP scaling law analysis
-│   ├── coord_check.py    # muP coordinate check
-│   ├── plot_token_histogram.py
-│   ├── render_examples.py
-│   ├── colab_lr_sweep.ipynb      # Part 2: SP LR sweep
-│   ├── colab_scaling_study.ipynb # Part 2: SP scaling study (reads optimal LR from sweep)
-│   └── colab_mup_experiments.ipynb # Part 3: µP LR sweep + scaling study
+│   ├── analyze_lr_sweep.py       # LR sweep result analysis
+│   ├── analyze_mup.py            # SP vs muP scaling comparison
+│   ├── analyze_scaling.py        # SP scaling law analysis
+│   ├── coord_check.py            # muP coordinate check
+│   ├── generate_size_comparison.py # Cross-size sample generation
+│   ├── plot_prefix_comparison.py # Prefix-conditioned comparison plots
+│   ├── plot_token_histogram.py   # Token sequence length histogram
+│   ├── plot_training_curves.py   # Training curve visualization
+│   ├── render_examples.py        # Dataset example renders
+│   ├── run_lr_sweep.sh           # SP LR sweep runner
+│   ├── run_mup_lr_sweep.sh       # muP LR sweep runner
+│   ├── run_mup_scaling_study.sh  # muP scaling study runner
+│   ├── run_scaling_study.sh      # SP scaling study runner
+│   ├── colab_eval_v2.ipynb       # Extended evaluation notebook
+│   ├── colab_full_pipeline.ipynb # Full training pipeline notebook
+│   └── colab_size_comparison.ipynb # Cross-size comparison notebook
 ├── src/
 │   ├── preprocess.py     # SVG cleaning and filtering pipeline
 │   ├── tokenize_data.py  # BPE tokenization
 │   ├── model.py          # GPT model (SP and muP modes)
 │   ├── train.py          # Training loop with sequential epoch iteration
 │   ├── generate.py       # SVG generation with top-k/top-p sampling
-│   └── evaluate.py       # Quantitative evaluation
+│   ├── evaluate.py       # Quantitative evaluation
+│   └── plot_training_curves.py  # Training curve plot utility
 ├── tokenizer/            # Trained BPE tokenizer files
 ├── requirements.txt
 └── README.md
