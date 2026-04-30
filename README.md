@@ -15,7 +15,7 @@ The project also compares **Standard Parameterization (SP)** with **Maximal Upda
 ### Installation
 
 ```bash
-git clone https://github.com/<user>/svg-scaling-project.git
+git clone https://github.com/katsukii/svg-scaling-project.git
 cd svg-scaling-project
 pip install -r requirements.txt
 ```
@@ -110,7 +110,7 @@ Resume from a checkpoint (required for Part 4 additional epoch training):
 
 ```bash
 python src/train.py --config configs/xl.yaml --mup \
-    --resume results/runs/mup_xl/final_checkpoint.pt \
+    --resume results/runs/mup_xl_extended/final_checkpoint.pt \
     --max-steps 12000
 ```
 
@@ -122,7 +122,7 @@ Generate SVG samples from a trained checkpoint:
 # Unconditional generation
 python src/generate.py \
     --config configs/xl.yaml \
-    --checkpoint results/runs/mup_xl/best_model.pt \
+    --checkpoint results/runs/mup_xl_extended/best_model.pt \
     --mup \
     --num-samples 10 \
     --temperature 0.8 \
@@ -133,7 +133,7 @@ python src/generate.py \
 # Prefix-conditioned generation
 python src/generate.py \
     --config configs/xl.yaml \
-    --checkpoint results/runs/mup_xl/best_model.pt \
+    --checkpoint results/runs/mup_xl_extended/best_model.pt \
     --mup \
     --prefix '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"' \
     --temperature 0.8 \
@@ -149,7 +149,7 @@ Run quantitative evaluation on generated samples. Both `.svg` and `_incomplete.t
 ```bash
 python src/evaluate.py \
     --config configs/xl.yaml \
-    --checkpoint results/runs/mup_xl/best_model.pt \
+    --checkpoint results/runs/mup_xl_extended/best_model.pt \
     --mup \
     --samples-dir results/samples/ \
     --test-data data/tokenized/test.bin

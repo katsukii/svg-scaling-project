@@ -72,7 +72,7 @@ def plot_lr_comparison(results: list[dict], output_path: Path) -> None:
     ax.plot(lrs, losses, "o-", markersize=8, linewidth=2)
     ax.set_xscale("log")
     ax.set_xlabel("Learning Rate")
-    ax.set_ylabel("Validation Loss (after 1 epoch)")
+    ax.set_ylabel("Final validation loss")
     ax.set_title("LR Sweep: Tiny Model (1.3M params)")
     ax.grid(True, alpha=0.3)
 

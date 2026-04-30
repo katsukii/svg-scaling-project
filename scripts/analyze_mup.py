@@ -9,8 +9,8 @@ Produces:
 
 Usage:
     python scripts/analyze_mup.py
-    python scripts/analyze_mup.py --sp-dir results/runs/scaling_study \
-                                  --mup-dir results/runs/mup_scaling_study \
+    python scripts/analyze_mup.py --sp-dir results/runs/sp \
+                                  --mup-dir results/runs/mup \
                                   --mup-sweep-dir results/runs/mup_lr_sweep
 """
 
@@ -126,7 +126,7 @@ def plot_mup_lr_sweep(sweep_results: list[dict], output_path: Path) -> None:
 
     ax.set_xscale("log")
     ax.set_xlabel("Learning Rate")
-    ax.set_ylabel("Validation Loss (after 1 epoch)")
+    ax.set_ylabel("Final validation loss")
     ax.set_title("µP LR Sweep (Tiny Model)")
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -168,7 +168,7 @@ def plot_combined_lr_sweep(
 
     ax.set_xscale("log")
     ax.set_xlabel("Learning Rate")
-    ax.set_ylabel("Validation Loss (after 1 epoch)")
+    ax.set_ylabel("Final validation loss")
     ax.set_title("LR Sweep Comparison: SP vs µP (Tiny Model)")
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
@@ -223,7 +223,7 @@ def plot_sp_vs_mup_scaling(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Parameters (N)")
-    ax.set_ylabel("Validation Loss (after 1 epoch)")
+    ax.set_ylabel("Final validation loss")
     ax.set_title("SP vs µP Scaling Laws for SVG Language Model")
     ax.legend(fontsize=8, loc="upper right")
     ax.grid(True, alpha=0.3, which="both")
@@ -263,7 +263,7 @@ def plot_lr_transfer(
 
     ax.set_xscale("log")
     ax.set_xlabel("Parameters (N)")
-    ax.set_ylabel("Validation Loss (after 1 epoch)")
+    ax.set_ylabel("Final validation loss")
     ax.set_title("LR Transfer: SP vs µP\n(Same base LR transferred across model sizes)")
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)

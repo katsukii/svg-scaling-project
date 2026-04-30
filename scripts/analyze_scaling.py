@@ -2,7 +2,7 @@
 
 Usage:
     python scripts/analyze_scaling.py
-    python scripts/analyze_scaling.py --scaling-dir results/runs/scaling_study
+    python scripts/analyze_scaling.py --scaling-dir results/runs/sp
 """
 
 import argparse
@@ -155,7 +155,7 @@ def plot_scaling_law(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Parameters (N)")
-    ax.set_ylabel("Validation Loss (after 1 epoch)")
+    ax.set_ylabel("Final validation loss")
     ax.set_title("Scaling Law: SVG Language Model")
     ax.grid(True, alpha=0.3, which="both")
 
