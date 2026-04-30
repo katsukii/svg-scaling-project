@@ -4,6 +4,18 @@ An empirical study of neural scaling laws applied to SVG (Scalable Vector Graphi
 
 The project also compares **Standard Parameterization (SP)** with **Maximal Update Parameterization (muP)** to evaluate learning rate transferability across model scales.
 
+**[Project Page](https://katsukii.github.io/svg-scaling-project/)** | **[Full Report (PDF)](https://katsukii.github.io/svg-scaling-project/report.pdf)**
+
+### Key Results
+
+<img src="results/plots/sp_vs_mup_scaling.png" width="600" alt="SP vs muP scaling curves">
+
+**Scaling curves under SP and muP.** SP's Tiny-optimal learning rate causes Large/XL models to diverge. muP enables zero-shot LR transfer, and losses follow a power-law trend (L = 0.85 N^-0.043, R^2 = 0.76).
+
+<img src="results/plots/xl_unconditional_samples.png" width="600" alt="Generated SVG samples">
+
+**Generated SVG samples** from the muP XL model (91.2M parameters). The model learns to produce valid, renderable SVG icons from a 107M-token corpus.
+
 ## Setup
 
 ### Requirements

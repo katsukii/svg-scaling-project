@@ -45,8 +45,8 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Docs (assignment PDF etc.)
-docs/
+# Docs (assignment PDF only; docs/ hosts GitHub Pages)
+docs/optional-project-spring26.pdf
 
 # Report (LaTeX build artifacts etc.)
 report/
